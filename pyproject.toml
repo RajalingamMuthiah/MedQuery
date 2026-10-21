@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Health-document question answering (RAG) with claim-level hallucination checking."
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
-dependencies = []
+dependencies = [
+    "pdfplumber>=0.11.10",
+    "pypdfium2>=5.14.0",
+    "pytesseract>=0.3.13",
+]
 
 [dependency-groups]
 dev = [
