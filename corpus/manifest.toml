@@ -1,0 +1,146 @@
+# MedQuery corpus manifest: the single source of truth for every document.
+# docs/SOURCES.md is generated from this file: uv run python -m medquery.ingest sources
+# sha256 pins the exact file version; leave it empty for a new entry and `download` prints it.
+
+[[documents]]
+id = "dm-stats-2020"
+title = "National Diabetes Statistics Report, 2020"
+publisher = "CDC"
+year = 2020
+topic = "diabetes"
+url = "https://stacks.cdc.gov/view/cdc/85309/cdc_85309_DS1.pdf"
+licence = "Public domain"
+licence_evidence = "CDC Stacks record https://stacks.cdc.gov/view/cdc/85309 marked Public Domain; https://www.cdc.gov/other/agencymaterials.html"
+as_of = "2020"
+sha256 = "cec2c3a799fd3a9fc64569f4483bce529cc078572287835ca985412cccf30ceb"
+
+[[documents]]
+id = "dm-4steps"
+title = "4 Steps to Manage Your Diabetes for Life"
+publisher = "National Diabetes Education Program (NIH/CDC)"
+year = 2016
+topic = "diabetes"
+url = "https://stacks.cdc.gov/view/cdc/55506/cdc_55506_DS1.pdf"
+licence = "Public domain"
+licence_evidence = "CDC Stacks record https://stacks.cdc.gov/view/cdc/55506 marked Public Domain"
+as_of = "2016"
+sha256 = "55f068f7b5abf9c13f1629827e6454c2b66a15486b1b66bab94a3a74e98d27d9"
+
+[[documents]]
+id = "dm-vadod-cpg"
+title = "VA/DoD Clinical Practice Guideline for the Management of Type 2 Diabetes Mellitus, v6.0"
+publisher = "US Department of Veterans Affairs / Department of Defense"
+year = 2023
+topic = "diabetes"
+url = "https://www.healthquality.va.gov/guidelines/CD/diabetes/VADoD-Diabetes-CPG_Final_508.pdf"
+licence = "Public domain"
+licence_evidence = "US federal work, 17 U.S.C. §105 (the publisher page states no licence)"
+as_of = "2023"
+sha256 = "cc5f24ac1b38560d00a2e85e5361d4f741ea2b7be9f7df354c6104b385836a5d"
+
+[[documents]]
+id = "htn-dash"
+title = "Your Guide to Lowering Your Blood Pressure with DASH"
+publisher = "NHLBI (NIH)"
+year = 2006
+topic = "hypertension"
+url = "https://www.nhlbi.nih.gov/files/docs/public/heart/new_dash.pdf"
+licence = "Public domain"
+licence_evidence = "NHLBI statement https://www.nhlbi.nih.gov/es/node/94288"
+as_of = "2006"
+sha256 = "a950723fa1047238ecf843723668c1bcae1f4ff4ee0722e475470211fbcc415d"
+
+[[documents]]
+id = "htn-jnc7-express"
+title = "JNC 7 Express: The Seventh Report of the Joint National Committee on Prevention, Detection, Evaluation, and Treatment of High Blood Pressure"
+publisher = "NHLBI (NIH)"
+year = 2003
+topic = "hypertension"
+url = "https://www.nhlbi.nih.gov/files/docs/guidelines/express.pdf"
+licence = "Public domain"
+licence_evidence = "NHLBI statement https://www.nhlbi.nih.gov/es/node/94288"
+as_of = "2003"
+superseded = "Superseded by later hypertension guidance, notably the 2017 ACC/AHA guideline, which lowered the hypertension threshold from 140/90 to 130/80 mmHg."
+sha256 = "3d1152f5ecaa527ffe61f5cbd55c156e053153e5c1c114f8f996d37db1d3e38f"
+
+[[documents]]
+id = "htn-millionhearts"
+title = "Hypertension Control Change Package, 2nd Edition"
+publisher = "CDC Million Hearts"
+year = 2020
+topic = "hypertension"
+url = "https://millionhearts.hhs.gov/files/HTN_Change_Package.pdf"
+licence = "Public domain"
+licence_evidence = "https://www.cdc.gov/other/agencymaterials.html"
+as_of = "2020"
+sha256 = "a3bb02bb063d286f8e1f4fcd2fe9ea83b3a3941e04d8fc13a9564b219ba2b704"
+
+[[documents]]
+id = "tb-qa-2021"
+title = "Questions and Answers About Tuberculosis, 2021"
+publisher = "CDC"
+year = 2021
+topic = "tuberculosis"
+url = "https://stacks.cdc.gov/view/cdc/108893/cdc_108893_DS1.pdf"
+licence = "Public domain"
+licence_evidence = "CDC Stacks record https://stacks.cdc.gov/view/cdc/108893 marked Public Domain"
+as_of = "2021"
+sha256 = "e0eedf0416195bdeb3b7597038563d6e5d169cb7c8ace15616ec6746cf0b8447"
+
+[[documents]]
+id = "tb-ltbi-2020"
+title = "Guidelines for the Treatment of Latent Tuberculosis Infection: Recommendations from the NTCA and CDC, 2020 (MMWR Recomm Rep 69(1))"
+publisher = "CDC (MMWR)"
+year = 2020
+topic = "tuberculosis"
+url = "https://www.cdc.gov/mmwr/volumes/69/rr/pdfs/rr6901a1-H.pdf"
+licence = "Public domain"
+licence_evidence = "Stated in the PDF: all material in the MMWR Series is in the public domain"
+as_of = "2020"
+sha256 = "46ed66d453821f0ddccadce5494a4e14439887fe2a0f1a6659e92729d89545c6"
+
+[[documents]]
+id = "tb-core-curriculum"
+title = "Core Curriculum on Tuberculosis: What the Clinician Should Know, 7th Edition"
+publisher = "CDC"
+year = 2021
+topic = "tuberculosis"
+url = "https://stacks.cdc.gov/view/cdc/104503/cdc_104503_DS1.pdf"
+licence = "Public domain"
+licence_evidence = "CDC Stacks record https://stacks.cdc.gov/view/cdc/104503 marked Public Domain"
+as_of = "2021"
+sha256 = "c5d35b02a9727511542abe31cdf275b6d1e6674b578fe3dee350fc96d7ffe535"
+
+[[documents]]
+id = "tb-reported-1964"
+title = "Reported Tuberculosis Data 1964 (PHS Publication No. 638)"
+publisher = "US Public Health Service / CDC"
+year = 1966
+topic = "tuberculosis"
+url = "https://stacks.cdc.gov/view/cdc/114638/cdc_114638_DS1.pdf"
+licence = "Public domain"
+licence_evidence = "CDC Stacks record https://stacks.cdc.gov/view/cdc/114638 marked Public Domain"
+as_of = "1964"
+sha256 = "69f53275a003865d735eb8b57c77b62d152db07ab2ac107b9a2f5328a69132f2"
+
+# Test fixtures: single pages cut from the documents above by
+#   uv run python -m medquery.ingest fixtures
+# Pages must contain no photos or third-party images (checked by tests/test_fixtures.py).
+
+[[fixtures]]
+file = "jnc7-express-p19-table.pdf"
+doc_id = "htn-jnc7-express"
+page = 19
+purpose = "Table page: Table 1, BP classification (open-sided ruled table)"
+
+[[fixtures]]
+file = "tb-ltbi-2020-p8-booktabs.pdf"
+doc_id = "tb-ltbi-2020"
+page = 8
+purpose = "Table page: Tables 3-4, regimens and dosages (horizontal rules only)"
+
+[[fixtures]]
+file = "tb-reported-1964-p5-scan.pdf"
+doc_id = "tb-reported-1964"
+page = 5
+purpose = "Scanned page: image-only, running text plus a chart in the scan bitmap (OCR test)"
