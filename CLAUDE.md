@@ -4,7 +4,7 @@ Health-document question answering (RAG) with grounded citations, abstention and
 
 ## Ground rules
 - Plan first. Propose each phase's plan and wait for approval before writing code.
-- One phase at a time. At the end of each phase: run the tests, show the results, commit, summarize in 10 lines or fewer, update this file, then STOP.
+- One phase at a time. At the end of each phase: run the tests, show the results, update this file, commit, push to origin (never force-push), summarize in 10 lines or fewer, then STOP.
 - Windows and PowerShell. Give PowerShell commands, use `pathlib` for paths, and write no bash-only scripts.
 - Never commit secrets. Keys go in `.env` (git-ignored); `.env.example` is committed. The key name is `ANTHROPIC_API_KEY`.
 - Corpus: public-domain, openly licensed or synthetic documents only, and never real patient data. Record every document's source and licence in [docs/SOURCES.md](docs/SOURCES.md).
@@ -46,8 +46,8 @@ uv run pre-commit run --all-files # all hooks
 Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), and add it in the phase that first needs it.
 
 ## Current phase
-**Phase 0 (setup): done locally.** The test suite passes, ruff is clean and the pre-commit hooks pass. The CI workflow (`.github/workflows/ci.yml`) is written but has **not run on GitHub yet** because there is no remote.
-Next: Phase 1 (corpus and ingestion), once a plan is approved.
+**Phase 0 (setup): done and approved.** Tests, ruff and pre-commit pass locally, and CI (`.github/workflows/ci.yml`) is green on GitHub (origin: https://github.com/RajalingamMuthiah/MedQuery).
+Next: Phase 1 (corpus and ingestion). The plan is being proposed and the corpus must be approved before anything is downloaded.
 
 ## Deviations log
 - Phase 0: `python-dotenv` is deferred to Phase 2, when the API key is first read.
