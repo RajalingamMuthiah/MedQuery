@@ -34,6 +34,22 @@ def atomic_write(path: Path) -> Iterator[TextIO]:
         raise
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Binary counterpart of atomic_write: temp file in the same folder, then os.replace()."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 @contextmanager
 def exclusive_lock(path: Path) -> Iterator[None]:
     """Hold `path` as a lock file for the duration of the block.
