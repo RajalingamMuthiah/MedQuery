@@ -137,6 +137,8 @@ class Task:
     topic: str
     pages: list[SourcePage]
     n: int
+    instruction: str = ""  # overrides TYPE_INSTRUCTIONS[type] (a new, versioned instruction)
+    prompt_id: str = ""  # recorded as gen_prompt; defaults to golden_gen_v1
 
 
 @dataclass
@@ -268,7 +270,7 @@ def generation_messages(task: Task, docs: dict[str, Document]) -> list[dict]:
             pages=pages,
             n=task.n,
             type=task.type,
-            instruction=TYPE_INSTRUCTIONS[task.type],
+            instruction=task.instruction or TYPE_INSTRUCTIONS[task.type],
             scope=scope,
         )
     return [{"role": "system", "content": GEN_SYSTEM}, {"role": "user", "content": user}]
@@ -370,48 +372,61 @@ def generate(
     log(f"{len(tasks)} generation calls planned: {dict(Counter(t.type for t in tasks))}")
 
     for number, task in enumerate(tasks, 1):
-        completion = llm.complete(
-            generation_messages(task, docs),
-            model=config.GOLDEN_AUTHOR_MODEL,
-            temperature=0.0,
-            max_tokens=1500,
-            reasoning_effort="none",
-            response_format={"type": "json_object"},
-        )
-        result.completions.append(completion)
-        source_pages = [(p.doc_id, p.page) for p in task.pages]
-        page_texts = {(p.doc_id, p.page): p.text for p in task.pages}
-        try:
-            raw_items = parse_json(completion.text).get("items", [])
-        except (json.JSONDecodeError, AttributeError):
-            raw_items = []
-            result.candidates.append(_candidate(task, {}, source_pages, "reply was not valid JSON"))
-        for raw in raw_items[: task.n]:
-            reason, extra = _validate(task, raw, page_texts, mapper, accepted)
-            if reason and reason.startswith(COPY_REASON):
-                source = " ".join(page_texts.values())
-                rewritten, retry = rephrase(str(raw.get("question", "")), source, llm)
-                result.completions.append(retry)
-                extra = {"original_question": raw.get("question", ""), "copy_reason": reason}
-                if rewritten:
-                    raw = {**raw, "question": rewritten}
-                    reason, more = _validate(task, raw, page_texts, mapper, accepted)
-                    extra.update(more)
-                    if reason:
-                        reason = f"after one rewrite: {reason}"
-                else:
-                    reason = "rewrite reply was not valid JSON"
-            if reason is None and task.type == "unanswerable":
-                verdict, check = verify_unanswerable(raw["question"], retriever, scan, llm)
-                result.completions.append(check)
-                extra["verification"] = verdict
-                if verdict.get("answer_found") or verdict.get("partial"):
-                    reason = "answer found in corpus by verification check"
-            if reason is None:
-                accepted.append(raw["question"])
-            result.candidates.append(_candidate(task, raw, source_pages, reason, extra))
-        log(f"  [{number}/{len(tasks)}] {task.type:<12} {task.topic:<12} {source_pages}")
+        _run_task(task, docs, mapper, scan, retriever, llm, accepted, result)
+        pages_used = [(p.doc_id, p.page) for p in task.pages]
+        log(f"  [{number}/{len(tasks)}] {task.type:<12} {task.topic:<12} {pages_used}")
     return result
+
+
+def _run_task(task, docs, mapper, scan, retriever, llm, accepted, result, extra_fields=None) -> int:
+    """One author call, then validation, one rewrite if a question copies the page, and the
+    unanswerability check. Appends every candidate to `result`; returns how many were accepted."""
+    completion = llm.complete(
+        generation_messages(task, docs),
+        model=config.GOLDEN_AUTHOR_MODEL,
+        temperature=0.0,
+        max_tokens=1500,
+        reasoning_effort="none",
+        response_format={"type": "json_object"},
+    )
+    result.completions.append(completion)
+    source_pages = [(p.doc_id, p.page) for p in task.pages]
+    page_texts = {(p.doc_id, p.page): p.text for p in task.pages}
+    try:
+        raw_items = parse_json(completion.text).get("items", [])
+    except (json.JSONDecodeError, AttributeError):
+        raw_items = []
+        result.candidates.append(
+            _candidate(task, {}, source_pages, "reply was not valid JSON", extra_fields)
+        )
+    n_accepted = 0
+    for raw in raw_items[: task.n]:
+        reason, extra = _validate(task, raw, page_texts, mapper, accepted)
+        if reason and reason.startswith(COPY_REASON):
+            source = " ".join(page_texts.values())
+            rewritten, retry = rephrase(str(raw.get("question", "")), source, llm)
+            result.completions.append(retry)
+            extra = {"original_question": raw.get("question", ""), "copy_reason": reason}
+            if rewritten:
+                raw = {**raw, "question": rewritten}
+                reason, more = _validate(task, raw, page_texts, mapper, accepted)
+                extra.update(more)
+                if reason:
+                    reason = f"after one rewrite: {reason}"
+            else:
+                reason = "rewrite reply was not valid JSON"
+        if reason is None and task.type == "unanswerable":
+            verdict, check = verify_unanswerable(raw["question"], retriever, scan, llm)
+            result.completions.append(check)
+            extra["verification"] = verdict
+            if verdict.get("answer_found") or verdict.get("partial"):
+                reason = "answer found in corpus by verification check"
+        if reason is None:
+            accepted.append(raw["question"])
+            n_accepted += 1
+        extra.update(extra_fields or {})
+        result.candidates.append(_candidate(task, raw, source_pages, reason, extra))
+    return n_accepted
 
 
 def _validate(task: Task, raw: dict, page_texts, mapper, accepted) -> tuple[str | None, dict]:
@@ -462,17 +477,19 @@ def _candidate(task: Task, raw: dict, source_pages, reason, extra=None) -> dict:
         "generator_note": str(raw.get("why_not_answerable", "")).strip(),
         "source_pages": [{"doc_id": d, "page": p} for d, p in source_pages],
         "gen_model": config.GOLDEN_AUTHOR_MODEL,
-        "gen_prompt": f"golden_gen_v1:{GEN_HASH}",
+        "gen_prompt": task.prompt_id or f"golden_gen_v1:{GEN_HASH}",
         "status": "accepted" if reason is None else "rejected",
         "reject_reason": reason or "",
         **(extra or {}),
     }
 
 
-def to_items(candidates: list[dict]) -> list[Item]:
-    """Accepted candidates as items with stable ids g001..., ordered by topic and type."""
+def to_items(candidates: list[dict], start: int = 1, sort: bool = True) -> list[Item]:
+    """Accepted candidates as items with ids g{start:03d}... (sorted by topic and type, or in
+    the given order when appending a top-up)."""
     accepted = [c for c in candidates if c["status"] == "accepted"]
-    accepted.sort(key=lambda c: (c["topic"], TYPE_ORDER.index(c["type"])))
+    if sort:
+        accepted.sort(key=lambda c: (c["topic"], TYPE_ORDER.index(c["type"])))
     return [
         Item(
             id=f"g{n:03d}",
@@ -486,7 +503,7 @@ def to_items(candidates: list[dict]) -> list[Item]:
             gen_model=c["gen_model"],
             generator_note=c["generator_note"],
         )
-        for n, c in enumerate(accepted, 1)
+        for n, c in enumerate(accepted, start)
     ]
 
 
@@ -497,3 +514,135 @@ def review_rows(items: list[Item], docs: dict[str, Document]) -> list[dict]:
         pages = " and ".join(f"p.{p}" for _, p in item.source_pages)
         rows.append(review_row(item, f"{docs[doc_id].title}, {pages}"))
     return rows
+
+
+# --- Top-up 1: targeted additions after the first run (appended to review_v1, ids continue) ---
+
+SUPERSEDED_V2 = (
+    "This document is JNC 7 (2003), which has been superseded by later hypertension guidance. "
+    "Ask about its SUBSTANTIVE clinical guidance: blood pressure classification, thresholds or "
+    "goals for treatment, drug recommendations, or lifestyle modification targets. Do NOT ask "
+    "about abbreviations, trial or study names, committee members or publication details. Name "
+    "'JNC 7' in the question. The reference answer must give the JNC 7 (2003) guidance and note "
+    "that it has since been superseded."
+)
+SUPERSEDED_V2_HASH = prompt_hash(GEN_SYSTEM, ANSWERABLE_TEMPLATE, REPHRASE_TEMPLATE, SUPERSEDED_V2)
+SUBSTANTIVE_RE = re.compile(
+    r"mm ?hg|therapy|drug|diuretic|lifestyle|sodium|classification|goal|treat", re.IGNORECASE
+)
+TOPUP_BATCH = "topup1"
+
+
+@dataclass(frozen=True)
+class TopupGroup:
+    label: str
+    type: str
+    topic: str
+    doc_ids: tuple[str, ...]
+    target: int  # accepted questions wanted
+    max_calls: int  # stop trying after this many author calls
+    per_call: int
+
+
+TOPUP_GROUPS = (
+    TopupGroup(
+        "tb-unanswerable",
+        "unanswerable",
+        "tuberculosis",
+        ("tb-core-curriculum", "tb-ltbi-2020", "tb-qa-2021"),
+        target=5,
+        max_calls=8,
+        per_call=2,
+    ),
+    TopupGroup("jnc7-substantive", "superseded", "hypertension", ("htn-jnc7-express",), 3, 6, 1),
+    TopupGroup("tb-1964-ocr", "factual", "tuberculosis", ("tb-reported-1964",), 2, 5, 1),
+)
+
+
+def topup_pool(
+    group: TopupGroup,
+    pages: list[SourcePage],
+    covered: dict[tuple[str, int], set[str]],
+    used: set[tuple[str, int]],
+) -> list[SourcePage]:
+    """Eligible, unused pages for a top-up group (scanned pages only for the OCR group)."""
+    pool = [
+        p
+        for p in pages
+        if p.doc_id in group.doc_ids
+        and (p.doc_id, p.page) not in used
+        and eligible(p, covered.get((p.doc_id, p.page), set()))
+    ]
+    want_ocr = group.label == "tb-1964-ocr"
+    pool = [p for p in pool if (p.source == "ocr") == want_ocr]
+    if group.type == "superseded":
+        pool = [p for p in pool if len(SUBSTANTIVE_RE.findall(p.text)) >= 3]
+    return pool
+
+
+def round_robin(pool: list[SourcePage], rng: random.Random) -> list[SourcePage]:
+    """Shuffle pages within each document, then interleave documents."""
+    by_doc: dict[str, list[SourcePage]] = defaultdict(list)
+    for p in pool:
+        by_doc[p.doc_id].append(p)
+    order = sorted(by_doc)
+    rng.shuffle(order)
+    for doc_id in order:
+        rng.shuffle(by_doc[doc_id])
+    out = []
+    while any(by_doc[d] for d in order):
+        out += [by_doc[d].pop() for d in order if by_doc[d]]
+    return out
+
+
+def topup(
+    manifest: Manifest,
+    pages: list[SourcePage],
+    chunks: list[dict],
+    retriever: Retriever,
+    llm: LLM,
+    existing: list[dict],
+    existing_questions: list[str],
+    groups: tuple[TopupGroup, ...] = TOPUP_GROUPS,
+    log=print,
+) -> GenerationResult:
+    """Targeted additions: never reuse a page any earlier candidate used, stop each group once
+    its target is accepted, and check duplicates against every existing question."""
+    docs = {d.id: d for d in manifest.documents}
+    mapper = EvidenceMapper(chunks)
+    scan = KeywordScan([c for c in chunks if c["kind"] != "quiz"])
+    covered = page_coverage(chunks)
+    used = {(s["doc_id"], s["page"]) for c in existing for s in c["source_pages"]}
+    accepted = list(existing_questions)
+    rng = random.Random(SEED + 1)
+    result = GenerationResult()
+    for group in groups:
+        got = calls = 0
+        for page in round_robin(topup_pool(group, pages, covered, used), rng):
+            if got >= group.target or calls >= group.max_calls:
+                break
+            superseded = group.type == "superseded"
+            task = Task(
+                group.type,
+                group.topic,
+                [page],
+                min(group.per_call, group.target - got),
+                instruction=SUPERSEDED_V2 if superseded else "",
+                prompt_id=f"golden_gen_v1+superseded_v2:{SUPERSEDED_V2_HASH}" if superseded else "",
+            )
+            got += _run_task(
+                task,
+                docs,
+                mapper,
+                scan,
+                retriever,
+                llm,
+                accepted,
+                result,
+                extra_fields={"batch": TOPUP_BATCH, "topup_group": group.label},
+            )
+            calls += 1
+            used.add((page.doc_id, page.page))
+            log(f"  {group.label}: {page.doc_id} p.{page.page} -> {got}/{group.target} accepted")
+        log(f"{group.label}: {got}/{group.target} accepted in {calls} calls")
+    return result

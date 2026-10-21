@@ -52,6 +52,7 @@ uv run python -m medquery.ingest sources   # regenerate docs/SOURCES.md (a test 
 uv run python -m medquery.ask "question"               # baseline answer with citations
 uv run python -m medquery.eval golden generate --dry-run  # show sampled source pages, no LLM calls
 uv run python -m medquery.eval golden generate          # candidates + review CSV (resumable)
+uv run python -m medquery.eval golden topup             # top-up 1 (already run; refuses to rerun)
 ```
 Tesseract with English data is required (`tesseract --list-langs` shows `eng`). CI installs Ubuntu's `tesseract-ocr`.
 Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), and add it in the phase that first needs it.
@@ -60,7 +61,7 @@ Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), an
 **Phase 0 (setup): done and approved.** CI is green on GitHub (origin: https://github.com/RajalingamMuthiah/MedQuery).
 **Phase 1 (corpus and ingestion): done and approved.** CI is green (Tesseract OCR tests run on Ubuntu). It ingests 10 approved public-domain PDFs. Ruled tables (grid, open-sided and booktabs) become Markdown table chunks. Scanned pages are OCR'd. Chunks are section-aware, and short chunks merge within their section. Per-document stats, including mean OCR confidence, are in `data/processed/build_summary.json`.
 Short chunks (under 30 words) are below the user's 8% threshold. The current rate is printed by `build` and stored in `build_summary.json`. Chunking will be judged by retrieval metrics in Phase 2.
-**Phase 2 (baseline RAG and evaluation harness): Part A done, at STOP 1.** The LLM layer, dense baseline RAG, `ask`, evidence mapping and golden generator are built. `medquery/eval/golden/review_v1.csv` (86 candidates) awaits the user's hand review; see `medquery/eval/golden/README.md`.
+**Phase 2 (baseline RAG and evaluation harness): Part A done, at STOP 1.** The LLM layer, dense baseline RAG, `ask`, evidence mapping and golden generator are built. `medquery/eval/golden/review_v1.csv` has 96 candidates and awaits the user's hand review; see `medquery/eval/golden/README.md`. g001–g086 come from the first run. g087–g096 are top-up 1, added at the user's request: 5 tuberculosis unanswerable, 3 substantive superseded questions (prompt `golden_gen_v1+superseded_v2`), and 2 from the 1964 scan.
 Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_v1.csv`) after the review. Then STOP 2.
 
 ### Carry-forward rules for Phase 2 onwards

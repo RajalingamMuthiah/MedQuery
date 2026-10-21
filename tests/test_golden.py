@@ -1,10 +1,11 @@
 import json
 import re
+from collections import Counter
 
 import numpy as np
 import pytest
 
-from medquery.eval.__main__ import review_has_edits
+from medquery.eval.__main__ import append_review, next_id_number, review_has_edits
 from medquery.eval.evidence import Evidence, EvidenceMapper
 from medquery.eval.golden import (
     Item,
@@ -20,13 +21,17 @@ from medquery.eval.golden import (
     write_review_csv,
 )
 from medquery.eval.golden_gen import (
+    GEN_HASH,
+    SUPERSEDED_V2_HASH,
     KeywordScan,
     SourcePage,
+    TopupGroup,
     eligible,
     generate,
     parse_json,
     plan_tasks,
     to_items,
+    topup,
 )
 from medquery.ingest.manifest import Document, Manifest
 from medquery.llm.base import Completion
@@ -336,3 +341,122 @@ def test_copied_spans_merges_overlapping_ngrams():
     question = "Is four months of daily rifampin is a preferred option for adults?"
     assert copied_spans(question, PAGE) == ["four months of daily rifampin is a preferred"]
     assert copied_spans("How long is the rifampin course?", PAGE) == []
+
+
+# --- top-up ---
+
+
+class RecordingLLM(ScriptedLLM):
+    def __init__(self, verdict):
+        super().__init__(verdict)
+        self.author_prompts: list[str] = []
+
+    def complete(self, messages, **kw):
+        if (
+            kw["model"] == "qwen/qwen3.8-27b"
+            and "Rewrite this question" not in messages[-1]["content"]
+        ):
+            self.author_prompts.append(messages[-1]["content"])
+        return super().complete(messages, **kw)
+
+
+def topup_corpus():
+    docs = {"tb": DOCS["tb"], "jnc": DOCS["jnc"]}
+    pages, chunks = [], []
+    for doc_id in docs:
+        for n in range(3, 15):
+            text = PAGE + (
+                " Stage 1 is 140 mmHg; drug therapy and lifestyle goals." if doc_id == "jnc" else ""
+            )
+            pages.append(page(doc_id, n, text))
+            chunks.append(
+                {
+                    "id": f"{doc_id}:{n:04d}",
+                    "doc_id": doc_id,
+                    "page_start": n,
+                    "page_end": n,
+                    "kind": "text",
+                    "text": text,
+                }
+            )
+    return Manifest(list(docs.values()), []), pages, chunks
+
+
+def test_topup_skips_used_pages_meets_targets_and_versions_superseded_prompt(tmp_path):
+    manifest, pages, chunks = topup_corpus()
+    retriever = Retriever(FakeEmbedder(), chunks, embed_cache=tmp_path / "e.npz")
+    existing = [{"source_pages": [{"doc_id": "tb", "page": n}]} for n in range(3, 9)]
+    groups = (
+        TopupGroup("tb-unanswerable", "unanswerable", "tuberculosis", ("tb",), 1, 4, 2),
+        TopupGroup("jnc7-substantive", "superseded", "hypertension", ("jnc",), 2, 6, 1),
+    )
+    llm = RecordingLLM({"answer_found": False, "partial": False})
+    result = topup(
+        manifest, pages, chunks, retriever, llm, existing, [], groups, log=lambda *_: None
+    )
+
+    used_before = {("tb", n) for n in range(3, 9)}
+    for c in result.candidates:
+        assert (c["source_pages"][0]["doc_id"], c["source_pages"][0]["page"]) not in used_before
+        assert c["batch"] == "topup1"
+    by_group = Counter(c["topup_group"] for c in result.candidates if c["status"] == "accepted")
+    assert by_group["tb-unanswerable"] == 1  # stopped at its target
+    superseded = [c for c in result.candidates if c["type"] == "superseded"]
+    assert superseded and all(
+        c["gen_prompt"].startswith("golden_gen_v1+superseded_v2:") for c in superseded
+    )
+    assert any("SUBSTANTIVE clinical guidance" in p for p in llm.author_prompts)
+    assert SUPERSEDED_V2_HASH != GEN_HASH
+
+
+def test_topup_checks_duplicates_against_existing_questions(tmp_path):
+    manifest, pages, chunks = topup_corpus()
+    retriever = Retriever(FakeEmbedder(), chunks, embed_cache=tmp_path / "e.npz")
+    groups = (TopupGroup("tb-unanswerable", "unanswerable", "tuberculosis", ("tb",), 1, 2, 1),)
+    llm = ScriptedLLM({"answer_found": False, "partial": False})
+    result = topup(
+        manifest, pages, chunks, retriever, llm, [], [UNANSWERABLE_Q], groups, log=lambda *_: None
+    )
+    assert {c["reject_reason"] for c in result.candidates} == {
+        "near-duplicate of an accepted question"
+    }
+
+
+def test_append_review_keeps_existing_rows_and_continues_ids():
+    existing = [{"id": "g001", "question": "a"}, {"id": "g086", "question": "b"}]
+    assert next_id_number(existing) == 87
+    new = [{"id": "g087", "question": "c"}]
+    assert append_review(existing, new) == existing + new
+    with pytest.raises(ValueError, match="collide"):
+        append_review(existing, [{"id": "g086", "question": "x"}])
+
+
+def test_to_items_can_start_at_an_offset_without_sorting():
+    candidates = [
+        {
+            "status": "accepted",
+            "topic": "tuberculosis",
+            "type": "unanswerable",
+            "question": "q1",
+            "reference_answer": "r",
+            "evidence": [],
+            "answerable": False,
+            "source_pages": [{"doc_id": "tb", "page": 3}],
+            "gen_model": "m",
+            "generator_note": "",
+        },
+        {
+            "status": "accepted",
+            "topic": "hypertension",
+            "type": "superseded",
+            "question": "q2",
+            "reference_answer": "r",
+            "evidence": [],
+            "answerable": True,
+            "source_pages": [{"doc_id": "jnc", "page": 4}],
+            "gen_model": "m",
+            "generator_note": "",
+        },
+    ]
+    items = to_items(candidates, start=87, sort=False)
+    assert [(i.id, i.question) for i in items] == [("g087", "q1"), ("g088", "q2")]
