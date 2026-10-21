@@ -50,6 +50,30 @@ def test_body_page_that_mentions_contents_is_kept():
     assert not is_toc_page(page)
 
 
+def test_page_text_keeps_reading_order_tables_and_rejoins_hyphens():
+    from medquery.ingest.blocks import Table
+    from medquery.ingest.build import page_text
+
+    table = Table(
+        rows=[["Drug", "Dose"], ["Rifampin", "10 mg/kg"]], caption="TABLE 4. Doses", top=0.5
+    )
+    page = Page(
+        3,
+        boxes=[
+            TextBox(
+                [Line("Before the com-", 9.0, False), Line("pelling table.", 9.0, False)], 0.2, 0.3
+            ),
+            TextBox([Line("After the table.", 9.0, False)], 0.7, 0.8),
+        ],
+        tables=[table],
+    )
+    assert page_text(page) == (
+        "Before the compelling table.\n\n"
+        "TABLE 4. Doses\n| Drug | Dose |\n|---|---|\n| Rifampin | 10 mg/kg |\n\n"
+        "After the table."
+    )
+
+
 def test_unique_text_in_margin_is_kept():
     pages = [Page(1, boxes=[box("Table 3 continued from previous page", 0.03)])]
     strip_running_text(pages)

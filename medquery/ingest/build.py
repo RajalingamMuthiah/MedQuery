@@ -8,8 +8,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from medquery.fileio import atomic_write, exclusive_lock
-from medquery.ingest.blocks import Page
-from medquery.ingest.chunk import SHORT_WORDS, Chunk, chunk_document
+from medquery.ingest.blocks import Page, Table
+from medquery.ingest.chunk import SHORT_WORDS, Chunk, chunk_document, join_lines, page_items
 from medquery.ingest.download import verify
 from medquery.ingest.manifest import Document, Manifest
 from medquery.ingest.pdf import extract_pages
@@ -65,6 +65,30 @@ def strip_running_text(pages: list[Page]) -> None:
         ]
 
 
+def page_text(page: Page) -> str:
+    """A page's text in reading order: paragraphs, with tables as caption plus Markdown."""
+    parts = []
+    for item in page_items(page):
+        if isinstance(item, Table):
+            parts.append(
+                f"{item.caption}\n{item.to_markdown()}" if item.caption else item.to_markdown()
+            )
+        else:
+            parts.append(join_lines([line.text for line in item.lines]))
+    return "\n\n".join(p for p in parts if p.strip())
+
+
+def page_record(doc: Document, page: Page) -> dict:
+    return {
+        "doc_id": doc.id,
+        "page": page.number,
+        "source": page.source,
+        "ocr_confidence": page.ocr_confidence,
+        "tables": len(page.tables),
+        "text": page_text(page),
+    }
+
+
 def record(doc: Document, chunk: Chunk) -> dict:
     return {
         "id": chunk.id,
@@ -117,6 +141,7 @@ def _build(manifest: Manifest, raw_dir: Path, out_dir: Path) -> dict:
     with (
         atomic_write(out_dir / "chunks.jsonl") as out,
         atomic_write(out_dir / "dropped.jsonl") as audit,
+        atomic_write(out_dir / "pages.jsonl") as page_out,
     ):
         for doc in manifest.documents:
             pdf_path = raw_dir / f"{doc.id}.pdf"
@@ -129,6 +154,8 @@ def _build(manifest: Manifest, raw_dir: Path, out_dir: Path) -> dict:
             drop_toc_pages(pages)
             dropped: list[tuple[str, Chunk]] = []
             chunks = chunk_document(doc.id, pages, dropped)
+            for page in pages:  # page-level text for golden-set generation (not chunk text)
+                page_out.write(json.dumps(page_record(doc, page), ensure_ascii=False) + "\n")
             for chunk in chunks:
                 out.write(json.dumps(record(doc, chunk), ensure_ascii=False) + "\n")
                 if chunk.kind == "text":

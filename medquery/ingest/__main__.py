@@ -79,6 +79,7 @@ def cmd_sources() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    sys.stdout.reconfigure(line_buffering=True)  # show progress live when output is redirected
     parser = argparse.ArgumentParser(prog="python -m medquery.ingest")
     commands = {
         "download": cmd_download,
