@@ -6,7 +6,7 @@ Health-document question answering (RAG) with grounded citations, abstention and
 - Plan first. Propose each phase's plan and wait for approval before writing code.
 - One phase at a time. At the end of each phase: run the tests, show the results, update this file, commit, push to origin (never force-push), summarize in 10 lines or fewer, then STOP.
 - Windows and PowerShell. Give PowerShell commands, use `pathlib` for paths, and write no bash-only scripts.
-- Never commit secrets. Keys go in `.env` (git-ignored); `.env.example` is committed. The key name is `ANTHROPIC_API_KEY`.
+- Never commit secrets. Keys go in `.env` (git-ignored); `.env.example` is committed. The key name is `GROQ_API_KEY`. Never print, log, cache or commit it.
 - Corpus: public-domain, openly licensed or synthetic documents only, and never real patient data. Record every document's source and licence in [docs/SOURCES.md](docs/SOURCES.md).
 - The app shows a "not medical advice" notice and never gives a diagnosis or dosing instructions beyond what the sources say.
 - Never fabricate metrics. Every number in the README must come from a script that can be re-run.
@@ -14,7 +14,7 @@ Health-document question answering (RAG) with grounded citations, abstention and
 - Ask before deviating from the plan, and log approved deviations below.
 
 ## Stack
-Python 3.11 (managed by uv), FastAPI, pytest, ruff, pre-commit. Retrieval: BM25 plus dense embeddings (BGE-class model) in FAISS or local Qdrant, reciprocal rank fusion, then a cross-encoder reranker. Generation and judging: Claude via the `anthropic` SDK. Frontend: React, Vite and Tailwind. Packaging: Docker Compose and GitHub Actions.
+Python 3.11 (managed by uv), FastAPI, pytest, ruff, pre-commit. Retrieval: BM25 plus dense embeddings (BGE-class model) in FAISS or local Qdrant, reciprocal rank fusion, then a cross-encoder reranker. Embeddings: `fastembed` (ONNX) with `BAAI/bge-small-en-v1.5`; numpy cosine index. Generation and judging: **Groq** through its OpenAI-compatible endpoint (`openai` SDK, `base_url=https://api.groq.com/openai/v1`), behind the provider interface in `medquery/llm/`. Models: generator `openai/gpt-oss-20b`, judge `openai/gpt-oss-120b` (production models only), golden-set author `qwen/qwen3.8-27b` (preview; a one-time frozen generation only). Frontend: React, Vite and Tailwind. Packaging: Docker Compose and GitHub Actions.
 
 ## Repo layout
 ```
@@ -47,7 +47,11 @@ uv run python -m medquery.ingest download  # fetch PDFs, verify pinned sha256
 uv run python -m medquery.ingest build     # data/processed/chunks.jsonl + build_summary.json
 uv run python -m medquery.ingest fixtures  # re-cut tests/fixtures/ pages from the manifest
 uv run python -m medquery.ingest sources   # regenerate docs/SOURCES.md (a test checks it)
-# Evaluation: not available yet (added in Phase 2)
+
+# RAG and evaluation (needs GROQ_API_KEY in .env; every LLM call is cached in data/cache/llm)
+uv run python -m medquery.ask "question"               # baseline answer with citations
+uv run python -m medquery.eval golden generate --dry-run  # show sampled source pages, no LLM calls
+uv run python -m medquery.eval golden generate          # candidates + review CSV (resumable)
 ```
 Tesseract with English data is required (`tesseract --list-langs` shows `eng`). CI installs Ubuntu's `tesseract-ocr`.
 Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), and add it in the phase that first needs it.
@@ -56,11 +60,14 @@ Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), an
 **Phase 0 (setup): done and approved.** CI is green on GitHub (origin: https://github.com/RajalingamMuthiah/MedQuery).
 **Phase 1 (corpus and ingestion): done and approved.** CI is green (Tesseract OCR tests run on Ubuntu). It ingests 10 approved public-domain PDFs. Ruled tables (grid, open-sided and booktabs) become Markdown table chunks. Scanned pages are OCR'd. Chunks are section-aware, and short chunks merge within their section. Per-document stats, including mean OCR confidence, are in `data/processed/build_summary.json`.
 Short chunks (under 30 words) are below the user's 8% threshold. The current rate is printed by `build` and stored in `build_summary.json`. Chunking will be judged by retrieval metrics in Phase 2.
-Next: Phase 2 (baseline RAG and evaluation harness), once a plan is approved.
+**Phase 2 (baseline RAG and evaluation harness): Part A done, at STOP 1.** The LLM layer, dense baseline RAG, `ask`, evidence mapping and golden generator are built. `medquery/eval/golden/review_v1.csv` (86 candidates) awaits the user's hand review; see `medquery/eval/golden/README.md`.
+Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_v1.csv`) after the review. Then STOP 2.
 
 ### Carry-forward rules for Phase 2 onwards
 - **Retrieval excludes `kind = "quiz"` chunks by default.** These are Core Curriculum "Knowledge Check" items: questions with no answers, and some state false claims on purpose. Include them only behind an explicit opt-in, and never use them as evidence for an answer.
 - Chunks carry `as_of` and `superseded`. Answers drawn from superseded guidance (JNC 7 Express) must say so.
+- **Judge prompt (`judge_v1`):** `supported_by_context` and `supported_by_cited` are judged ONLY against the retrieved passages, never against the reference answer. The reference answer goes in a separate final section, used only for `correctness`, with an explicit instruction not to use it for support decisions. A test checks that it comes after the passages and the claims instructions.
+- **Rate limits (Groq, per model):** 8K tokens/min and 1K requests/day (confirmed from headers); 30 requests/min and about 200K tokens/day (documented). All LLM calls go through the throttle, retries and disk cache in `medquery/llm/`. Eval runs are resumable.
 - **Crash-safe outputs:** use `medquery/fileio.py` for every generated artifact, including eval reports. `atomic_write(path)` writes to a temp file and then calls `os.replace()`, so a crash never leaves a half-written file. `exclusive_lock(path)` refuses to start a second run. The build locks `data/processed/.build.lock`. If a crash leaves the lock behind, delete it once you have checked no run is active. Never run two builds at once: overlapping runs corrupted `chunks.jsonl` once during Phase 1.
 
 ### Ingestion design notes
@@ -80,4 +87,8 @@ Next: Phase 2 (baseline RAG and evaluation harness), once a plan is approved.
 - Phase 1: a third fixture (MMWR p.8) and booktabs table detection were added, because the MMWR dosing tables have horizontal rules only.
 - Phase 1: these were added at the user's request after reviewing chunk quality: short-chunk merging (within a section, then with siblings), junk dropping, document-title stripping and table-of-contents skipping.
 - Phase 1: the download User-Agent includes the repo URL, because CDC's firewall rejects bare tool names.
+- Phase 2: **the provider changed from Anthropic Claude to Groq**, at the user's request (the brief specifies Anthropic). The key is `GROQ_API_KEY`, accessed through the OpenAI-compatible endpoint behind `medquery/llm/`, so other providers can be added later.
+- Phase 2: the unanswerability check shows the judge 6 dense + 6 keyword passages, not the planned 10 + 10, because 20 passages exceed the 8K tokens/min limit in a single request.
+- Phase 2 (user-approved): a candidate question that copies 6 or more consecutive words from its page gets one rewrite by the author model. Then it is re-validated, or rejected. The original wording is kept as `original_question`.
+- Phase 2: the retry, throttle and cache logic lives in `medquery/llm/client.py`, separate from the protocol in `base.py`, so it can be tested with a fake transport.
 - Phase 1 (local environment only): Tesseract's English model was missing, so `eng.traineddata` from tessdata_fast 4.1.0 was added to `%LOCALAPPDATA%\Tesseract-OCR\tessdata`.
