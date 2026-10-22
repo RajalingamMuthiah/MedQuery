@@ -233,6 +233,7 @@ def write_review(rows: list[dict], key: dict, meta: dict, paths: dict[str, Path]
         f.write("\ufeff" + buffer.getvalue())
     with atomic_write(paths["key"]) as f:
         json.dump({"meta": meta, "rows": key}, f, indent=2, ensure_ascii=False)
+        f.write("\n")
 
 
 def agreement_block(labels: list[dict], judge_prompt: str, judge_model: str, meta: dict) -> dict:
