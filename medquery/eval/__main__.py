@@ -8,6 +8,7 @@ import sys
 from collections import Counter
 
 from medquery import config, paths
+from medquery.eval.compare import write_ablation
 from medquery.eval.evidence import EvidenceMapper
 from medquery.eval.freeze import FreezeError, freeze, load_golden, sha256_file, write_frozen
 from medquery.eval.gitinfo import git_state
@@ -32,6 +33,7 @@ from medquery.eval.judge import JUDGE_PROMPTS
 from medquery.eval.judge import prompt_id as judge_prompt_id
 from medquery.eval.judge_review import (
     MATCH_RATIO,
+    N_ANSWERS,
     N_CLAIMS,
     REVIEW_VERSION,
     REVISIONS,
@@ -39,6 +41,7 @@ from medquery.eval.judge_review import (
     agreement_block,
     freeze_labels,
     judge_history,
+    labelled_units,
     latest_revision,
     load_agreement,
     load_labels,
@@ -50,9 +53,10 @@ from medquery.eval.judge_review import (
     write_review,
 )
 from medquery.eval.judge_review import SEED as SAMPLE_SEED
+from medquery.eval.judge_review import _key as judge_review_key
 from medquery.eval.judge_review import review_rows as judge_review_rows
 from medquery.eval.report import write_report
-from medquery.eval.runner import CONFIGS, RUNS_DIR, load_records, run, run_id
+from medquery.eval.runner import CONFIGS, RUNS_DIR, build_retriever, load_records, run, run_id
 from medquery.eval.usage import format_summary, summarize
 from medquery.fileio import LockHeld, atomic_write, exclusive_lock
 from medquery.ingest.manifest import load_manifest
@@ -282,8 +286,8 @@ def cmd_run(split: str, config_name: str) -> int:
     run_dir = RUNS_DIR / rid
     print(f"run {rid}: config {config.name}, split {split}, golden {golden_meta['version']}")
     try:
-        retriever = Retriever(
-            FastEmbedder(config.embed_model), load_chunks(include_quiz=config.include_quiz)
+        retriever = build_retriever(
+            config, load_chunks(include_quiz=config.include_quiz), FastEmbedder(config.embed_model)
         )
         records = run(
             config,
@@ -317,33 +321,76 @@ def cmd_run(split: str, config_name: str) -> int:
     return 0
 
 
-def cmd_judge_sample(run: str) -> int:
+FRESH_SAMPLE = {"claims": 25, "answers": 10, "min_unsupported": 5}  # Phase 3 re-validation
+
+
+def cmd_judge_sample(run: str, version: str = "v1", exclude_labelled: str | None = None) -> int:
     records = load_records(RUNS_DIR / run / "items.jsonl")
     if not records:
         print(f"no records for run {run}")
         return 1
-    review = review_paths()
+    review = review_paths(version)
     if review["csv"].exists() or review["labels"].exists():
         print(f"{review['csv'].name} already exists; refusing to overwrite a labelling file")
         return 1
+    run_config = json.loads((RUNS_DIR / run / "run.json").read_text(encoding="utf-8"))
+    judge_model = run_config["config"]["judge"]
+    judge_prompt = run_config["config"]["judge_prompt"]
+    exclude_claims: set[str] = set()
+    exclude_answers: set[tuple] = set()
+    if exclude_labelled:
+        exclude_claims, exclude_answers = labelled_units(exclude_labelled)
+    if version == "v1":
+        n_claims, n_answers, min_unsupported = N_CLAIMS, N_ANSWERS, math.ceil(N_CLAIMS / 3)
+    else:
+        n_claims, n_answers = FRESH_SAMPLE["claims"], FRESH_SAMPLE["answers"]
+        min_unsupported = FRESH_SAMPLE["min_unsupported"]
     chunks = {c["id"]: c for c in load_chunks(include_quiz=True)}
     natural_unsupported = sum(
-        not c["supported_by_context"] for r in records if r["judge"] for c in r["judge"]["claims"]
+        not c["supported_by_context"] and judge_review_key(c["text"]) not in exclude_claims
+        for r in records
+        if r["judge"]
+        for c in r["judge"]["claims"]
     )
-    need = max(0, math.ceil(N_CLAIMS / 3) - natural_unsupported)
+    need = max(0, min_unsupported - natural_unsupported)
+    print(
+        f"natural judge-unsupported claims available: {natural_unsupported}; probes needed: {need}"
+    )
     try:
-        probes, probe_calls = probe_units(records, get_client(), chunks, need)
+        probes, probe_calls = (
+            probe_units(
+                records,
+                get_client(),
+                chunks,
+                need,
+                judge_version=judge_prompt.split(":")[0],
+                judge_model=judge_model,
+                exclude_claims=exclude_claims,
+            )
+            if need
+            else ([], [])
+        )
     except QuotaExhausted as exc:
         print(f"stopped: {exc}\nRe-run later; finished probe calls are cached.")
         return 2
-    units = sample(records, probes=probes)
+    units = sample(
+        records,
+        n_claims,
+        n_answers,
+        probes=probes,
+        exclude_claims=exclude_claims,
+        exclude_answers=exclude_answers,
+    )
     rows, key = judge_review_rows(units, {cid: c["text"] for cid, c in chunks.items()})
-    run_config = json.loads((RUNS_DIR / run / "run.json").read_text(encoding="utf-8"))
     meta = {
+        "version": version,
         "run_id": run,
         "split": run_config["split"],
-        "judge_model": run_config["config"]["judge"],
-        "judge_prompt": run_config["config"]["judge_prompt"],
+        "config": run_config["config"]["name"],
+        "judge_model": judge_model,
+        "judge_prompt": judge_prompt,
+        "excluded_labelled_in": exclude_labelled,
+        "excluded": {"claims": len(exclude_claims), "answers": len(exclude_answers)},
         "seed": SAMPLE_SEED,
         "probes": {
             "method": "mismatched context: a dev answer re-judged against the passages "
@@ -366,6 +413,32 @@ def cmd_judge_sample(run: str) -> int:
         print(f"  {unit:<7} judge said {label:<12} {source:<8} {n}")
     print(f"probes: {meta['probes']}")
     print("\n".join(format_summary(summarize(probe_calls))))
+    return 0
+
+
+def cmd_ablation(split: str, config_names: list[str]) -> int:
+    """Ablation report over completed runs of the given configs (dev only, clean tree)."""
+    if split != "dev":
+        print("refused: Phase 3 ablations use the dev split only")
+        return 1
+    git = git_state()
+    if git["dirty"] is not False:
+        print("refused: ablation reports need a clean, committed git tree")
+        return 1
+    items, golden_meta = load_golden("v1")
+    chunks_sha = sha256_file(CHUNKS)
+    total = sum(1 for i in items if i["split"] == split)
+    runs = []
+    for name in config_names:
+        cfg = CONFIGS[name]
+        rid = run_id(cfg, split, golden_meta["sha256"], chunks_sha)
+        records = sorted(load_records(RUNS_DIR / rid / "items.jsonl"), key=lambda r: r["id"])
+        if len(records) != total:
+            print(f"run {rid} ({name}) has {len(records)} of {total} items; finish it first")
+            return 1
+        runs.append((cfg, rid, records))
+    for path in write_ablation(runs, split, git, golden_meta, chunks_sha):
+        print(f"wrote {path.relative_to(paths.ROOT)}")
     return 0
 
 
@@ -406,13 +479,13 @@ def print_agreement(block: dict, labels: list[dict], judge_name: str) -> None:
         print(f"      note: {x['notes'] or '(none)'}")
 
 
-def cmd_judge_review_freeze(labeller: str, revision: str) -> int:
+def cmd_judge_review_freeze(labeller: str, revision: str, version: str = REVIEW_VERSION) -> int:
     try:
-        meta = freeze_labels(labeller, revision=revision)
+        meta = freeze_labels(labeller, version=version, revision=revision)
     except LabelError as exc:
         print(f"freeze refused: {exc}")
         return 1
-    review = review_paths(revision=revision)
+    review = review_paths(version, revision=revision)
     labels = [
         json.loads(line) for line in review["labels"].read_text(encoding="utf-8").splitlines()
     ]
@@ -431,13 +504,15 @@ def cmd_judge_review_freeze(labeller: str, revision: str) -> int:
     return 0
 
 
-def cmd_judge_review_measure(judge_version: str, model: str, seed: int) -> int:
-    revision = latest_revision()
+def cmd_judge_review_measure(
+    judge_version: str, model: str, seed: int, version: str = REVIEW_VERSION
+) -> int:
+    revision = latest_revision(version)
     if revision is None:
         print("no frozen labels")
         return 1
-    labels, meta = load_labels(REVIEW_VERSION, GOLDEN_DIR, revision)
-    review = review_paths(revision=revision)
+    labels, meta = load_labels(version, GOLDEN_DIR, revision)
+    review = review_paths(version, revision=revision)
     with review["csv"].open(encoding="utf-8-sig", newline="") as f:
         claim_text = {r["row_id"]: r["claim"] for r in csv.DictReader(f)}
     records = {r["id"]: r for r in load_records(RUNS_DIR / meta["run_id"] / "items.jsonl")}
@@ -463,7 +538,7 @@ def cmd_judge_review_measure(judge_version: str, model: str, seed: int) -> int:
         "match_ratio": MATCH_RATIO,
         "usage": summarize(calls),
     }
-    path = measurement_path(REVIEW_VERSION, GOLDEN_DIR, judge_version, revision, model, seed)
+    path = measurement_path(version, GOLDEN_DIR, judge_version, revision, model, seed)
     with atomic_write(path) as f:
         f.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     print(
@@ -526,9 +601,19 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--config", choices=sorted(CONFIGS), default="baseline")
     sample_parser = sub.add_parser("judge-sample", help="write the judge-review CSV from a run")
     sample_parser.add_argument("--run", required=True, help="run id (data/eval_runs/<id>)")
+    sample_parser.add_argument(
+        "--version", default=REVIEW_VERSION, help="review version (v2: fresh)"
+    )
+    sample_parser.add_argument(
+        "--exclude-labelled", default=None, help="leave out units labelled in this review version"
+    )
+    abl = sub.add_parser("ablation", help="paired comparison of completed dev runs")
+    abl.add_argument("--split", choices=["dev", "test"], default="dev")
+    abl.add_argument("--configs", nargs="+", choices=sorted(CONFIGS), required=True)
     jr = sub.add_parser("judge-review").add_subparsers(dest="action", required=True)
     jr_freeze = jr.add_parser("freeze", help="freeze hand labels and report agreement")
     jr_freeze.add_argument("--labeller", required=True, help="who labelled, recorded in meta")
+    jr_freeze.add_argument("--version", default=REVIEW_VERSION)
     jr_freeze.add_argument(
         "--revision",
         default="",
@@ -539,21 +624,24 @@ def main(argv: list[str] | None = None) -> int:
     jr_measure.add_argument("--judge", required=True, choices=sorted(JUDGE_PROMPTS))
     jr_measure.add_argument("--model", default=config.JUDGE_MODEL)
     jr_measure.add_argument("--seed", type=int, default=0)
+    jr_measure.add_argument("--version", default=REVIEW_VERSION)
     jr_stab = jr.add_parser("stability", help="verdict flips across seeds on the frozen labels")
     jr_stab.add_argument("--judge", required=True, choices=sorted(JUDGE_PROMPTS))
     jr_stab.add_argument("--model", default=config.JUDGE_MODEL)
     jr_stab.add_argument("--seeds", type=int, nargs="+", default=[0, 1])
     args = parser.parse_args(argv)
     if args.group == "judge-review" and args.action == "freeze":
-        return cmd_judge_review_freeze(args.labeller, args.revision)
+        return cmd_judge_review_freeze(args.labeller, args.revision, args.version)
     if args.group == "judge-review" and args.action == "measure":
-        return cmd_judge_review_measure(args.judge, args.model, args.seed)
+        return cmd_judge_review_measure(args.judge, args.model, args.seed, args.version)
     if args.group == "judge-review" and args.action == "stability":
         return cmd_judge_review_stability(args.judge, args.model, args.seeds)
     if args.group == "run":
         return cmd_run(args.split, args.config)
     if args.group == "judge-sample":
-        return cmd_judge_sample(args.run)
+        return cmd_judge_sample(args.run, args.version, args.exclude_labelled)
+    if args.group == "ablation":
+        return cmd_ablation(args.split, args.configs)
     if args.group == "golden" and args.action == "freeze":
         excluded = {x.strip() for x in args.exclude.split(",") if x.strip()}
         return cmd_golden_freeze(args.version, args.reviewer, excluded, args.check)

@@ -91,6 +91,27 @@ def _allocate(pools: dict[str, list[dict]], n: int, minority: tuple[str, ...], r
 MAX_PROBES = 16
 
 
+def _key(text: str) -> str:
+    """Normalised text for 'already labelled?' checks: case and whitespace ignored."""
+    return " ".join(text.lower().split())
+
+
+def labelled_units(version: str, root: Path = GOLDEN_DIR) -> tuple[set[str], set[tuple]]:
+    """Claim texts and (item id, answer text) pairs already in a judge-review CSV + key."""
+    import csv
+
+    paths = review_paths(version, root)
+    key = json.loads(paths["key"].read_text(encoding="utf-8"))["rows"]
+    claims, answers = set(), set()
+    with paths["csv"].open(encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            if row["unit"] == "claim":
+                claims.add(_key(row["claim"]))
+            else:
+                answers.add((key[row["row_id"]]["item_id"], _key(row["answer"])))
+    return claims, answers
+
+
 def probe_units(
     records: list[dict],
     llm,
@@ -98,6 +119,9 @@ def probe_units(
     need_unsupported: int,
     seed: int = SEED,
     max_probes: int = MAX_PROBES,
+    judge_version: str = "judge_v1",
+    judge_model: str | None = None,
+    exclude_claims: set[str] | None = None,
 ) -> tuple[list[dict], list]:
     """Mismatched-context probes: re-judge a dev answer against the passages retrieved for a
     dev question from a different topic, so its claims are rarely supported by what is shown.
@@ -118,12 +142,23 @@ def probe_units(
         donor = donors[rng.randrange(len(donors))]
         hits = [Hit(chunks[cid], 0.0, n) for n, cid in enumerate(donor["context_ids"], 1)]
         try:
-            verdict, calls = judge(r["question"], hits, r["answer"], r["reference_answer"], llm)
+            extra = {"model": judge_model} if judge_model else {}
+            verdict, calls = judge(
+                r["question"],
+                hits,
+                r["answer"],
+                r["reference_answer"],
+                llm,
+                version=judge_version,
+                **extra,
+            )
         except JudgeFailed as exc:
             completions += exc.completions
             continue
         completions += calls
         for index, claim in enumerate(verdict.claims):
+            if exclude_claims and _key(claim["text"]) in exclude_claims:
+                continue
             label = "supported" if claim["supported_by_context"] else "unsupported"
             units.append(
                 {
@@ -147,10 +182,17 @@ def sample(
     n_answers: int = N_ANSWERS,
     seed: int = SEED,
     probes: list[dict] | None = None,
+    exclude_claims: set[str] | None = None,
+    exclude_answers: set[tuple[str, str]] | None = None,
 ) -> list[dict]:
     """Units from judged answers: claims stratified by topic x support verdict, answers by
-    topic x correctness verdict. Each unit keeps the judge's label (for the hidden key)."""
+    topic x correctness verdict. Each unit keeps the judge's label (for the hidden key).
+
+    exclude_claims / exclude_answers (normalised text; (item id, answer text)) leave out units
+    already labelled in an earlier review, so a fresh sample is independent of it."""
     rng = random.Random(seed)
+    exclude_claims = exclude_claims or set()
+    exclude_answers = exclude_answers or set()
     claims: dict[str, list[dict]] = {label: [] for label in CLAIM_LABELS}
     answers: dict[str, list[dict]] = {label: [] for label in ANSWER_LABELS}
     for r in sorted(records, key=lambda r: r["id"]):
@@ -158,6 +200,7 @@ def sample(
             continue
         indexed = list(enumerate(r["judge"]["claims"]))
         rng.shuffle(indexed)
+        indexed = [(i, c) for i, c in indexed if _key(c["text"]) not in exclude_claims]
         for index, claim in indexed[:MAX_CLAIMS_PER_ITEM]:
             label = "supported" if claim["supported_by_context"] else "unsupported"
             claims[label].append(
@@ -172,7 +215,7 @@ def sample(
                     "probe": False,
                 }
             )
-        if r["answerable"]:
+        if r["answerable"] and (r["id"], _key(r["answer"])) not in exclude_answers:
             label = r["judge"]["correctness"]
             answers[label].append(
                 {
