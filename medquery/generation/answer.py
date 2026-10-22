@@ -39,6 +39,18 @@ def answer(
     model: str = config.GENERATOR_MODEL,
 ) -> Answer:
     hits, retrieval_s = retriever.retrieve(question, k)
+    return answer_from_hits(question, hits, retrieval_s, llm, model=model)
+
+
+def answer_from_hits(
+    question: str,
+    hits: list[Hit],
+    retrieval_s: float,
+    llm: LLM,
+    *,
+    model: str = config.GENERATOR_MODEL,
+) -> Answer:
+    """Generate from already-retrieved passages (the eval runner retrieves 10, uses the top k)."""
     completion = llm.complete(answer_messages(question, hits), model=model, **GENERATION)
     text = completion.text.strip()
     return Answer(
