@@ -14,7 +14,11 @@ Health-document question answering (RAG) with grounded citations, abstention and
 - Ask before deviating from the plan, and log approved deviations below.
 
 ## Stack
-Python 3.11 (managed by uv), FastAPI, pytest, ruff, pre-commit. Retrieval: BM25 plus dense embeddings (BGE-class model) in FAISS or local Qdrant, reciprocal rank fusion, then a cross-encoder reranker. Embeddings: `fastembed` (ONNX) with `BAAI/bge-small-en-v1.5`; numpy cosine index. Generation and judging: **Groq** through its OpenAI-compatible endpoint (`openai` SDK, `base_url=https://api.groq.com/openai/v1`), behind the provider interface in `medquery/llm/`. Models: generator `openai/gpt-oss-20b`, judge `openai/gpt-oss-120b` (production models only), golden-set author `qwen/qwen3.8-27b` (preview; a one-time frozen generation only). Frontend: React, Vite and Tailwind. Packaging: Docker Compose and GitHub Actions.
+Python 3.11 (managed by uv), FastAPI, pytest, ruff, pre-commit. Retrieval: BM25 plus dense embeddings (BGE-class model) in FAISS or local Qdrant, reciprocal rank fusion, then a cross-encoder reranker. Embeddings: `fastembed` (ONNX) with `BAAI/bge-small-en-v1.5`; numpy cosine index. LLMs go through the provider router in `medquery/llm/` (`openai` SDK; each model is mapped to its provider in `medquery/config.py`).
+- **Generator:** `openai/gpt-oss-20b` on **Groq** (`GROQ_API_KEY`).
+- **Judge:** `gpt-6.1-sol` on **OpenAI** (`OPENAI_API_KEY`), prompt `judge_v1`. The model accepts only its default temperature, so `MODEL_OVERRIDES` omits `temperature` for it.
+- **Golden-set author:** `qwen/qwen3.8-27b` on Groq (preview; a one-time frozen generation only).
+- **Earlier judge:** `openai/gpt-oss-120b` on Groq, kept in the report history. Frontend: React, Vite and Tailwind. Packaging: Docker Compose and GitHub Actions.
 
 ## Repo layout
 ```
@@ -64,10 +68,14 @@ Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), an
 **Phase 0 (setup): done and approved.** CI is green on GitHub (origin: https://github.com/RajalingamMuthiah/MedQuery).
 **Phase 1 (corpus and ingestion): done and approved.** CI is green (Tesseract OCR tests run on Ubuntu). It ingests 10 approved public-domain PDFs. Ruled tables (grid, open-sided and booktabs) become Markdown table chunks. Scanned pages are OCR'd. Chunks are section-aware, and short chunks merge within their section. Per-document stats, including mean OCR confidence, are in `data/processed/build_summary.json`.
 Short chunks (under 30 words) are below the user's 8% threshold. The current rate is printed by `build` and stored in `build_summary.json`. Chunking will be judged by retrieval metrics in Phase 2.
-**Phase 2 Part B2: paused for a label re-check (2026-10-22).** The user's hand labels are frozen as `judge_review_v1.labels.jsonl` (labeller "Rajalingam Muthiah (human)", sha256 `ca799c8b…`).
-- **Agreement:** all claims κ 0.738, natural claims κ −0.063, probes κ 1.0, answers κ 0.634.
-- **Suspect labels:** the notes on r022, r028 and r050 describe passages from other rows. The files are identical to the generated ones, so this is a reading slip, not a file error.
-- **Next:** the user re-checks those rows, and the result is frozen as a second label set (`labels_r2`, with v1 kept). Then judge_v2 (natural κ < 0.6), the clean dev report, the test report and the README.
+**Phase 2 Part B2 (2026-10-22):** judge switched to OpenAI `gpt-6.1-sol` with `judge_v1`, at the user's decision.
+- **Hand labels:** `labels` (v1, `ca799c8b…`), then `labels_r2` (`8d2ee727…`). r2 corrects r022, r027, r028 and r050 after the user re-checked them.
+- **Measurements on r2** (raw counts use matched units only):
+  - gpt-oss-120b/judge_v1 caught 1 of 3 unsupported natural claims and wrongly rejected 0.
+  - gpt-6.1-sol/judge_v1 and gpt-6.1-sol/judge_v2 each caught 3 of 3 and wrongly rejected 2 of 23 (r036, r037: strict on interpretive parts).
+  - Answer agreement was 0.850 for all three.
+- **Seed stability** (gpt-6.1-sol/judge_v1): 0 of 39 claim and 0 of 20 answer verdicts changed.
+- **Why judge_v1:** v2 gave no measured gain, and the user's rule (at most 1 false rejection) selected neither, so v1 avoids the overfitting risk.
 **Phase 2: Part B1 done (STOP 2 passed).** golden_v1 was frozen on 2026-10-22 (67 items: 15 unanswerable, 44 dev / 23 test, sha256 `ed7ec824…`). g097 and g098 (topup2, unreviewed) were excluded at freeze, at the user's choice. The dev baseline run is `eb2f931e39c1`; its provisional report `medquery/eval/reports/2026-10-22_baseline_dev.md` was made on a DIRTY tree and is flagged "judge NOT YET VALIDATED". `medquery/eval/golden/judge_review_v1.csv` (40 claims, 20 answers; verdicts hidden in the key file) awaits the user's labels.
 Next, Part B2:
 1. `judge-review freeze`, then agreement and kappa (judge_v2 only if claim kappa < 0.6).
@@ -81,7 +89,11 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
 - **Retrieval excludes `kind = "quiz"` chunks by default.** These are Core Curriculum "Knowledge Check" items: questions with no answers, and some state false claims on purpose. Include them only behind an explicit opt-in, and never use them as evidence for an answer.
 - Chunks carry `as_of` and `superseded`. Answers drawn from superseded guidance (JNC 7 Express) must say so.
 - **Judge prompt (`judge_v1`):** `supported_by_context` and `supported_by_cited` are judged ONLY against the retrieved passages, never against the reference answer. The reference answer goes in a separate final section, used only for `correctness`, with an explicit instruction not to use it for support decisions. A test checks that it comes after the passages and the claims instructions.
-- **Rate limits (Groq, per model):** 8K tokens/min and 1K requests/day (confirmed from headers); 30 requests/min and about 200K tokens/day (documented). All LLM calls go through the throttle, retries and disk cache in `medquery/llm/`. Eval runs are resumable.
+- **Rate limits:**
+  - **Groq, per model:** 8K tokens/min and 1K requests/day (from headers); 30 requests/min and 200K tokens/day (documented, and hit on 2026-10-22).
+  - **OpenAI:** 10K requests/min and 4M tokens/min (from headers); we throttle to 500 requests/min and 400K tokens/min.
+  - All LLM calls go through the router, throttle, retries and disk cache in `medquery/llm/`. Eval runs are resumable.
+- **Judge measurements on frozen labels:** a different judge model splits claims differently. Each labelled claim maps to the re-extracted claims that make it up (`matching_parts`: content-word containment of at least 0.7, otherwise text similarity of at least 0.6). It is unsupported if any part is. Unmatched units are reported, never guessed.
 - **Crash-safe outputs:** use `medquery/fileio.py` for every generated artifact, including eval reports. `atomic_write(path)` writes to a temp file and then calls `os.replace()`, so a crash never leaves a half-written file. `exclusive_lock(path)` refuses to start a second run. The build locks `data/processed/.build.lock`. If a crash leaves the lock behind, delete it once you have checked no run is active. Never run two builds at once: overlapping runs corrupted `chunks.jsonl` once during Phase 1.
 
 ### Ingestion design notes
@@ -114,6 +126,12 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
 - Phase 2 (user-approved): the judge-review sample adds **mismatched-context probes**. The dev run had only 39 claims, 1 of them unsupported, too few to validate hallucination detection.
   - **How they're made:** 8 dev answers were re-judged against passages retrieved for a different-topic dev question, giving 13 unsupported probe claims that fill the unsupported third of the 40-claim sample. Supported claims are all natural.
   - **How they're tracked:** probe rows are marked in `judge_review_v1.key.json`, and the agreement block reports `n_probe`.
+- Phase 2 (**deviation, user decision 2026-10-22**): the judge moved permanently from Groq `openai/gpt-oss-120b` to OpenAI `gpt-6.1-sol`. The generator stays on Groq.
+  - **Reasons:** Groq's 200K tokens/day quota blocked Part B2, and a different family from the generator removes self-preference bias.
+  - **How it was chosen:** from the live `/v1/models` list and the OpenAI pricing and deprecation pages. It is current, mid-cost ($2/$10 per 1M), and supports JSON mode and seed.
+  - **Temperature:** no current OpenAI model accepts temperature 0. gpt-4.1 does, but shuts down on 2027-01-14. A seed stability check stands in for determinism.
+  - The interrupted judge_v2 measurement on gpt-oss-120b (Groq quota) was stopped. Its cached calls are kept, and it was not completed.
+- Phase 2: the measurement method for a new judge on frozen labels changed after the first gpt-6.1-sol run. Whole-sentence matching left 8 of 60 units unmatched because of claim granularity; part-based matching left 1. All measurements were re-run from the cache, with no new API calls.
 - Phase 2: evidence normalisation ignores whitespace between a digit and the letter that follows ("130/80 mmHg" matches "130/80mmHg"), because PDF text layers drop such spaces. It's applied to both quotes and chunks.
 - Phase 2: top-ups append to `review_v1.csv` byte for byte (`append_review_csv`), so the user's edited rows are never rewritten.
 - Phase 2: the retry, throttle and cache logic lives in `medquery/llm/client.py`, separate from the protocol in `base.py`, so it can be tested with a fake transport.
