@@ -241,11 +241,18 @@ def agreement_block(labels: list[dict], judge_prompt: str, judge_model: str, met
     labels were collected for a different judge model or prompt than the one in use."""
     out = {
         "labels_sha256": meta.get("sha256"),
+        "labeller": meta.get("labeller"),
         "stale": meta.get("judge_prompt") != judge_prompt or meta.get("judge_model") != judge_model,
         "labelled_for": f"{meta.get('judge_model')} {meta.get('judge_prompt')}",
     }
-    for unit in ("claim", "answer"):
-        pairs = [(x["human_label"], x["judge_label"]) for x in labels if x["unit"] == unit]
+    groups = {
+        "claim": lambda x: x["unit"] == "claim",
+        "claim_natural": lambda x: x["unit"] == "claim" and not x.get("probe"),
+        "claim_probe": lambda x: x["unit"] == "claim" and x.get("probe"),
+        "answer": lambda x: x["unit"] == "answer",
+    }
+    for unit, member in groups.items():
+        pairs = [(x["human_label"], x["judge_label"]) for x in labels if member(x)]
         human, judged = [p[0] for p in pairs], [p[1] for p in pairs]
 
         def pct(sample):
@@ -259,7 +266,7 @@ def agreement_block(labels: list[dict], judge_prompt: str, judge_model: str, met
             counts[h] += 1
         out[unit] = {
             "n": len(pairs),
-            "n_probe": sum(1 for x in labels if x["unit"] == unit and x.get("probe")),
+            "n_probe": sum(1 for x in labels if member(x) and x.get("probe")),
             "agreement": bootstrap_ci(pairs, pct),
             "kappa": bootstrap_ci(pairs, kappa),
             "human_class_counts": dict(sorted(counts.items())),
@@ -278,3 +285,77 @@ def load_agreement(
     meta = json.loads(paths["meta"].read_text(encoding="utf-8"))
     labels = [json.loads(line) for line in paths["labels"].read_text(encoding="utf-8").splitlines()]
     return agreement_block(labels, judge_prompt, judge_model, meta)
+
+
+ALLOWED = {"claim": CLAIM_LABELS, "answer": ANSWER_LABELS}
+
+
+class LabelError(Exception):
+    pass
+
+
+def freeze_labels(labeller: str, version: str = REVIEW_VERSION, root: Path = GOLDEN_DIR) -> dict:
+    """Join hand labels (CSV) with the hidden judge verdicts (key) and freeze them."""
+    import csv
+    import hashlib
+    from datetime import date
+
+    paths = review_paths(version, root)
+    if paths["labels"].exists() or paths["meta"].exists():
+        raise LabelError(
+            f"{paths['labels'].name} already exists: frozen labels are never overwritten"
+        )
+    with paths["csv"].open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    key = json.loads(paths["key"].read_text(encoding="utf-8"))
+    problems = []
+    if {r["row_id"] for r in rows} != set(key["rows"]):
+        problems.append("row ids in the CSV do not match the key")
+    for r in rows:
+        label = r["human_label"].strip().lower()
+        if r["row_id"] in key["rows"] and r["unit"] != key["rows"][r["row_id"]]["unit"]:
+            problems.append(f"{r['row_id']}: unit changed from the generated file")
+        if label not in ALLOWED.get(r["unit"], ()):
+            problems.append(
+                f"{r['row_id']}: {r['unit']} label {label!r} not in {ALLOWED.get(r['unit'])}"
+            )
+    if problems:
+        raise LabelError(f"{len(problems)} problem(s):\n  " + "\n  ".join(problems))
+
+    labels = []
+    for r in sorted(rows, key=lambda r: r["row_id"]):
+        k = key["rows"][r["row_id"]]
+        labels.append(
+            {
+                "row_id": r["row_id"],
+                "unit": r["unit"],
+                "topic": r["topic"],
+                "item_id": k["item_id"],
+                "claim_index": k["claim_index"],
+                "probe": k.get("probe", False),
+                "donor_id": k.get("donor_id"),
+                "human_label": r["human_label"].strip().lower(),
+                "judge_label": k["judge_label"],
+                "notes": r["notes"].strip(),
+            }
+        )
+    with atomic_write(paths["labels"]) as f:
+        for label in labels:
+            f.write(json.dumps(label, ensure_ascii=False) + "\n")
+    digest = hashlib.sha256(paths["labels"].read_bytes()).hexdigest()
+    meta = {
+        "version": version,
+        "created": date.today().isoformat(),
+        "labeller": labeller,
+        "labels": len(labels),
+        "csv_sha256": hashlib.sha256(paths["csv"].read_bytes()).hexdigest(),
+        "run_id": key["meta"].get("run_id"),
+        "split": key["meta"].get("split"),
+        "judge_model": key["meta"]["judge_model"],
+        "judge_prompt": key["meta"]["judge_prompt"],
+        "probes": key["meta"].get("probes"),
+        "sha256": digest,
+    }
+    with atomic_write(paths["meta"]) as f:
+        f.write(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+    return meta

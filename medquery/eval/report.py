@@ -93,17 +93,29 @@ def agreement_lines(block: dict | None) -> list[str]:
             "used in this run."
         )
     lines += [
-        "| unit | n | agreement [95% CI] | Cohen's kappa [95% CI] | human labels |",
+        "| units | n (probes) | agreement [95% CI] | Cohen's kappa [95% CI] | human / judge |",
         "|---|---|---|---|---|",
     ]
-    for unit in ("claim", "answer"):
+    names = {
+        "claim": "all claims",
+        "claim_natural": "natural claims",
+        "claim_probe": "mismatched-context probes",
+        "answer": "answers",
+    }
+    for unit in ("claim", "claim_natural", "claim_probe", "answer"):
+        if unit not in block:
+            continue
         b = block[unit]
         a, k = b["agreement"], b["kappa"]
         lines.append(
-            f"| {unit} | {b['n']} | {_fmt(a[0])} {_ci(a[1], a[2])} | "
-            f"{_fmt(k[0])} {_ci(k[1], k[2])} | {b['human_class_counts']} |"
+            f"| {names[unit]} | {b['n']} ({b.get('n_probe', 0)}) | "
+            f"{_fmt(a[0])} {_ci(a[1], a[2])} | "
+            f"{_fmt(k[0])} {_ci(k[1], k[2])} | {b['human_class_counts']} / "
+            f"{b['judge_class_counts']} |"
         )
-    lines.append(f"Labels sha256: `{block['labels_sha256']}`")
+    lines.append(
+        f"Labeller: {block.get('labeller', 'unknown')}. Labels sha256: `{block['labels_sha256']}`"
+    )
     return lines
 
 

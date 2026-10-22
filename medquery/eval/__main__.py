@@ -29,6 +29,9 @@ from medquery.eval.golden_gen import (
 )
 from medquery.eval.judge_review import (
     N_CLAIMS,
+    LabelError,
+    agreement_block,
+    freeze_labels,
     load_agreement,
     probe_units,
     review_paths,
@@ -345,6 +348,45 @@ def cmd_judge_sample(run: str) -> int:
     return 0
 
 
+def cmd_judge_review_freeze(labeller: str) -> int:
+    try:
+        meta = freeze_labels(labeller)
+    except LabelError as exc:
+        print(f"freeze refused: {exc}")
+        return 1
+    review = review_paths()
+    labels = [
+        json.loads(line) for line in review["labels"].read_text(encoding="utf-8").splitlines()
+    ]
+    print(f"froze {meta['labels']} labels by {meta['labeller']} -> {review['labels'].name}")
+    print(f"labels sha256 {meta['sha256']}; judge {meta['judge_model']} {meta['judge_prompt']}")
+    block = agreement_block(labels, meta["judge_prompt"], meta["judge_model"], meta)
+    print(
+        f"\n{'group':<14} {'n':>3} {'probe':>5}  {'agreement [95% CI]':<26} {'kappa [95% CI]':<26}"
+    )
+    for group in ("claim", "claim_natural", "claim_probe", "answer"):
+        b = block[group]
+        a, k = b["agreement"], b["kappa"]
+
+        def fmt(t):
+            if t[0] is None:
+                return "n/a"
+            return f"{t[0]:.3f}" + (f" [{t[1]:.3f}, {t[2]:.3f}]" if t[1] is not None else "")
+
+        print(f"{group:<14} {b['n']:>3} {b['n_probe']:>5}  {fmt(a):<26} {fmt(k):<26}")
+        print(f"{'':<14} human {b['human_class_counts']}  judge {b['judge_class_counts']}")
+    disagreements = [x for x in labels if x["human_label"] != x["judge_label"]]
+    print(f"\n{len(disagreements)} disagreement(s):")
+    for x in disagreements:
+        source = f"probe (passages from {x['donor_id']})" if x["probe"] else "natural"
+        print(
+            f"  {x['row_id']} {x['unit']:<6} {x['item_id']} {source}: "
+            f"you={x['human_label']}, judge={x['judge_label']}"
+        )
+        print(f"      note: {x['notes'] or '(none)'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(line_buffering=True)  # show progress live when output is redirected
     parser = argparse.ArgumentParser(prog="python -m medquery.eval")
@@ -365,7 +407,12 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--config", choices=sorted(CONFIGS), default="baseline")
     sample_parser = sub.add_parser("judge-sample", help="write the judge-review CSV from a run")
     sample_parser.add_argument("--run", required=True, help="run id (data/eval_runs/<id>)")
+    jr = sub.add_parser("judge-review").add_subparsers(dest="action", required=True)
+    jr_freeze = jr.add_parser("freeze", help="freeze hand labels and report agreement")
+    jr_freeze.add_argument("--labeller", required=True, help="who labelled, recorded in meta")
     args = parser.parse_args(argv)
+    if args.group == "judge-review" and args.action == "freeze":
+        return cmd_judge_review_freeze(args.labeller)
     if args.group == "run":
         return cmd_run(args.split, args.config)
     if args.group == "judge-sample":

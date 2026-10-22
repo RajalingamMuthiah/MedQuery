@@ -621,3 +621,106 @@ def test_probes_fill_only_the_unsupported_share():
     assert all(not u["probe"] for u in claims if u["judge_label"] == "supported")
     rows, key = review_rows(units, {"k": "passage text"})
     assert sum(k["probe"] for k in key.values()) == math.ceil(40 / 3)
+
+
+# --- freezing hand labels ---
+
+
+def write_review_files(tmp_path, labels):
+    from medquery.eval.judge_review import COLUMNS, review_paths
+
+    paths = review_paths("t", root=tmp_path)
+    rows = [
+        {c: "" for c in COLUMNS}
+        | {"row_id": rid, "unit": unit, "topic": "tb", "human_label": label, "notes": f"note {rid}"}
+        for rid, unit, label in labels
+    ]
+    import csv as _csv
+
+    with paths["csv"].open("w", encoding="utf-8-sig", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    key = {
+        "meta": {"judge_model": "m", "judge_prompt": "judge_v1:x", "run_id": "run"},
+        "rows": {
+            rid: {
+                "unit": unit,
+                "item_id": f"g{n:03d}",
+                "claim_index": 0,
+                "judge_label": "supported" if unit == "claim" else "correct",
+                "probe": n % 2 == 0,
+                "donor_id": None,
+            }
+            for n, (rid, unit, _) in enumerate(labels)
+        },
+    }
+    paths["key"].write_text(json.dumps(key), encoding="utf-8")
+    return paths
+
+
+def test_freeze_labels_joins_key_and_records_labeller(tmp_path):
+    from medquery.eval.judge_review import freeze_labels
+
+    paths = write_review_files(
+        tmp_path, [("r001", "claim", "Unsupported"), ("r002", "answer", "correct")]
+    )
+    meta = freeze_labels("Test Person (human)", version="t", root=tmp_path)
+    assert meta["labeller"] == "Test Person (human)" and meta["labels"] == 2
+    rows = [json.loads(x) for x in paths["labels"].read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["human_label"] == "unsupported"  # "Unsupported" in the CSV, lower-cased
+    assert rows[0]["judge_label"] == "supported" and rows[0]["notes"] == "note r001"
+
+
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        ([("r001", "claim", "")], "label '' not in"),
+        ([("r001", "claim", "correct")], "claim label 'correct' not in"),
+        ([("r001", "answer", "supported")], "answer label 'supported' not in"),
+    ],
+)
+def test_freeze_labels_rejects_missing_or_wrong_labels(tmp_path, labels, message):
+    from medquery.eval.judge_review import LabelError, freeze_labels
+
+    write_review_files(tmp_path, labels)
+    with pytest.raises(LabelError, match=message):
+        freeze_labels("x", version="t", root=tmp_path)
+
+
+def test_frozen_labels_are_never_overwritten(tmp_path):
+    from medquery.eval.judge_review import LabelError, freeze_labels
+
+    write_review_files(tmp_path, [("r001", "claim", "supported")])
+    freeze_labels("x", version="t", root=tmp_path)
+    with pytest.raises(LabelError, match="never overwritten"):
+        freeze_labels("x", version="t", root=tmp_path)
+
+
+def test_agreement_is_split_into_natural_and_probe_claims():
+    labels = (
+        [{"unit": "claim", "probe": False, "human_label": "supported", "judge_label": "supported"}]
+        * 9
+        + [
+            {
+                "unit": "claim",
+                "probe": False,
+                "human_label": "unsupported",
+                "judge_label": "supported",
+            }
+        ]
+        + [
+            {
+                "unit": "claim",
+                "probe": True,
+                "human_label": "unsupported",
+                "judge_label": "unsupported",
+            }
+        ]
+        * 5
+    )
+    block = agreement_block(labels, "p", "m", {"judge_prompt": "p", "judge_model": "m"})
+    assert block["claim_natural"]["n"] == 10 and block["claim_natural"]["n_probe"] == 0
+    assert block["claim_natural"]["agreement"][0] == pytest.approx(0.9)
+    assert block["claim_probe"]["n"] == 5 and block["claim_probe"]["agreement"][0] == 1.0
+    assert block["claim"]["n"] == 15
