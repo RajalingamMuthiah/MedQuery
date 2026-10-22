@@ -1,0 +1,19 @@
+{
+  "version": "v1",
+  "created": "2026-10-22",
+  "labeller": "Rajalingam Muthiah (human)",
+  "labels": 60,
+  "csv_sha256": "d21f59ac42b8a30dc397cdc15049abb665a21617a2a0de41acda2d3326f1813d",
+  "run_id": "eb2f931e39c1",
+  "split": "dev",
+  "judge_model": "openai/gpt-oss-120b",
+  "judge_prompt": "judge_v1:f3afa3a92213",
+  "probes": {
+    "method": "mismatched context: a dev answer re-judged against the passages retrieved for a dev question from a different topic",
+    "probe_answers": 8,
+    "probe_claims": 13,
+    "probe_claims_in_sample": 13,
+    "judge_calls": 8
+  },
+  "sha256": "ca799c8b9e5373e5f2ebb56cb74001bc2242b81b642aa390b7bed4aab0f4987d"
+}
