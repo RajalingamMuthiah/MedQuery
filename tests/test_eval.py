@@ -724,3 +724,151 @@ def test_agreement_is_split_into_natural_and_probe_claims():
     assert block["claim_natural"]["agreement"][0] == pytest.approx(0.9)
     assert block["claim_probe"]["n"] == 5 and block["claim_probe"]["agreement"][0] == 1.0
     assert block["claim"]["n"] == 15
+
+
+# --- label revisions, judge_v2 and measurement on frozen labels ---
+
+
+def test_judge_v2_changes_only_the_support_rules():
+    from medquery.eval.judge import JUDGE_PROMPTS, JUDGE_TEMPLATE
+
+    v1, v2 = JUDGE_PROMPTS["judge_v1"][0], JUDGE_PROMPTS["judge_v2"][0]
+    assert v1 == JUDGE_TEMPLATE and v1 != v2
+    assert "must match the passage EXACTLY" in v2 and "crude vs age-adjusted" in v2
+    before, after = v1.split("3. "), v2.split("3. ")
+    assert before[0] == after[0]  # everything up to rule 3 is identical
+    assert (
+        v1[v1.index("5. ") :] == v2[v2.index("5. ") :]
+    )  # rule 5 onward, incl. reference, identical
+    assert v2.index("{reference}") > v2.index("EXACTLY")
+
+
+def test_revision_records_what_it_supersedes_and_changed_rows(tmp_path):
+    from medquery.eval.judge_review import COLUMNS, LabelError, freeze_labels, review_paths
+
+    paths = write_review_files(
+        tmp_path, [("r001", "claim", "supported"), ("r002", "claim", "supported")]
+    )
+    with pytest.raises(LabelError, match="label set v1 is not frozen"):
+        freeze_labels("x", version="t", root=tmp_path, revision="r2")
+    v1 = freeze_labels("x", version="t", root=tmp_path)
+    import csv as _csv
+
+    with paths["csv"].open(encoding="utf-8-sig", newline="") as f:
+        rows = list(_csv.DictReader(f))
+    rows[1]["human_label"], rows[1]["notes"] = "unsupported", "re-checked"
+    with paths["csv"].open("w", encoding="utf-8-sig", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    r2 = freeze_labels("x", version="t", root=tmp_path, revision="r2")
+    assert r2["supersedes"] == {
+        "revision": "v1",
+        "file": "judge_review_t.labels.jsonl",
+        "sha256": v1["sha256"],
+    }
+    assert r2["changed_rows"] == ["r002"] and r2["revision"] == "r2"
+    assert review_paths("t", tmp_path)["labels"].exists()  # v1 is kept
+
+
+def test_load_agreement_uses_matching_measurement_else_marks_stale(tmp_path):
+    from medquery.eval.judge_review import load_agreement, measurement_path
+
+    write_review_files(tmp_path, [("r001", "answer", "correct"), ("r002", "claim", "unsupported")])
+    from medquery.eval.judge_review import freeze_labels
+
+    meta = freeze_labels("x", version="t", root=tmp_path)
+    v1 = load_agreement("judge_v1:x", "m", version="t", root=tmp_path)
+    assert not v1["stale"] and v1["natural_unsupported_caught"]["judge_caught"] == 0
+    assert load_agreement("judge_v2:y", "m", version="t", root=tmp_path)["stale"]
+    path = measurement_path("t", tmp_path, "judge_v2", "")
+    path.write_text(
+        json.dumps(
+            {
+                "judge_prompt": "judge_v2:y",
+                "judge_model": "m",
+                "labels_sha256": meta["sha256"],
+                "unmatched": [],
+                "row_labels": {"r001": "correct", "r002": "unsupported"},
+            }
+        )
+    )
+    v2 = load_agreement("judge_v2:y", "m", version="t", root=tmp_path)
+    assert not v2["stale"] and v2["measured_on_frozen_labels"]
+    assert v2["natural_unsupported_caught"]["judge_caught"] == 1
+    path.write_text(
+        json.dumps(
+            {
+                "judge_prompt": "judge_v2:y",
+                "judge_model": "m",
+                "labels_sha256": "other",
+                "unmatched": [],
+                "row_labels": {},
+            }
+        )
+    )
+    assert load_agreement("judge_v2:y", "m", version="t", root=tmp_path)["stale"]
+
+
+class AlignJudge:
+    """Re-extracts claims with slightly different wording; marks the 130-139 claim unsupported."""
+
+    def __init__(self):
+        self.passages_seen = []
+
+    def complete(self, messages, **kw):
+        user = messages[1]["content"]
+        self.passages_seen.append(user.split("Answer to evaluate")[0])
+        claims = [
+            {
+                "text": "JNC 7 defined prehypertension as systolic 130-139 mmHg.",
+                "cited_ids": [],
+                "supported_by_context": False,
+                "supported_by_cited": None,
+            },
+            {
+                "text": "Lifestyle changes are advised for this group.",
+                "cited_ids": [],
+                "supported_by_context": True,
+                "supported_by_cited": None,
+            },
+        ]
+        reply = {"claims": claims, "relevancy": 5, "correctness": "partial", "rationale": "r"}
+        return Completion(text=json.dumps(reply), model=kw["model"], finish_reason="stop")
+
+
+def test_measure_judge_aligns_claims_and_uses_donor_passages_for_probes():
+    from medquery.eval.judge_review import measure_judge
+
+    def rec(rid, ctx):
+        return {
+            "id": rid,
+            "question": f"{rid}?",
+            "answer": "a",
+            "reference_answer": "r",
+            "context_ids": [ctx],
+        }
+
+    records = {"g1": rec("g1", "own"), "g2": rec("g2", "donor")}
+    chunks = {
+        cid: {**chunk_record(0), "id": cid, "text": f"text of {cid}"} for cid in ("own", "donor")
+    }
+    labels = [
+        {"row_id": "r1", "unit": "claim", "item_id": "g1", "probe": False, "donor_id": None},
+        {"row_id": "r2", "unit": "answer", "item_id": "g1", "probe": False, "donor_id": None},
+        {"row_id": "r3", "unit": "claim", "item_id": "g1", "probe": True, "donor_id": "g2"},
+        {"row_id": "r4", "unit": "claim", "item_id": "g1", "probe": False, "donor_id": None},
+    ]
+    claim_text = {
+        "r1": "JNC 7 defined prehypertension as a systolic 130–139 mmHg.",
+        "r3": "Lifestyle changes are advised for this group",
+        "r4": "Something the judge never re-extracted at all.",
+    }
+    judge_llm = AlignJudge()
+    verdicts, unmatched, calls = measure_judge(
+        "judge_v2", "m", labels, claim_text, records, chunks, judge_llm
+    )
+    assert verdicts == {"r1": "unsupported", "r2": "partial", "r3": "supported", "r4": None}
+    assert unmatched == ["r4"] and len(calls) == 2  # one call per (item, passages) group
+    assert any("text of donor" in p for p in judge_llm.passages_seen)
+    assert any("text of own" in p for p in judge_llm.passages_seen)

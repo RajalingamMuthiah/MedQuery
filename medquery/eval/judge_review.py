@@ -35,13 +35,19 @@ COLUMNS = [
 ]
 
 
-def review_paths(version: str = REVIEW_VERSION, root: Path = GOLDEN_DIR) -> dict[str, Path]:
+REVISIONS = ("", "r2", "r3", "r4")  # "" is the first frozen label set; later ones correct it
+
+
+def review_paths(
+    version: str = REVIEW_VERSION, root: Path = GOLDEN_DIR, revision: str = ""
+) -> dict[str, Path]:
     stem = f"judge_review_{version}"
+    suffix = f"_{revision}" if revision else ""
     return {
         "csv": root / f"{stem}.csv",
         "key": root / f"{stem}.key.json",
-        "labels": root / f"{stem}.labels.jsonl",
-        "meta": root / f"{stem}.labels.meta.json",
+        "labels": root / f"{stem}.labels{suffix}.jsonl",
+        "meta": root / f"{stem}.labels{suffix}.meta.json",
     }
 
 
@@ -251,8 +257,24 @@ def agreement_block(labels: list[dict], judge_prompt: str, judge_model: str, met
         "claim_probe": lambda x: x["unit"] == "claim" and x.get("probe"),
         "answer": lambda x: x["unit"] == "answer",
     }
+    out["labels_revision"] = meta.get("revision") or "v1"
+    out["supersedes"] = meta.get("supersedes")
+    natural_unsupported = [
+        x
+        for x in labels
+        if x["unit"] == "claim" and not x.get("probe") and x["human_label"] == "unsupported"
+    ]
+    out["natural_unsupported_caught"] = {
+        "human_unsupported": len(natural_unsupported),
+        "judge_caught": sum(x["judge_label"] == "unsupported" for x in natural_unsupported),
+    }
     for unit, member in groups.items():
-        pairs = [(x["human_label"], x["judge_label"]) for x in labels if member(x)]
+        # A judge verdict can be missing (None) when a re-judged claim could not be matched.
+        pairs = [
+            (x["human_label"], x["judge_label"])
+            for x in labels
+            if member(x) and x["judge_label"] is not None
+        ]
         human, judged = [p[0] for p in pairs], [p[1] for p in pairs]
 
         def pct(sample):
@@ -275,16 +297,124 @@ def agreement_block(labels: list[dict], judge_prompt: str, judge_model: str, met
     return out
 
 
+def latest_revision(version: str = REVIEW_VERSION, root: Path = GOLDEN_DIR) -> str | None:
+    found = None
+    for revision in REVISIONS:
+        paths = review_paths(version, root, revision)
+        if paths["labels"].exists() and paths["meta"].exists():
+            found = revision
+    return found
+
+
+def load_labels(version: str, root: Path, revision: str) -> tuple[list[dict], dict]:
+    paths = review_paths(version, root, revision)
+    meta = json.loads(paths["meta"].read_text(encoding="utf-8"))
+    text = paths["labels"].read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines()], meta
+
+
+def measurement_path(version: str, root: Path, judge_version: str, revision: str) -> Path:
+    return root / f"judge_review_{version}.measure_{judge_version}_{revision or 'v1'}.json"
+
+
 def load_agreement(
     judge_prompt: str, judge_model: str, version: str = REVIEW_VERSION, root: Path = GOLDEN_DIR
 ) -> dict | None:
-    """The agreement block from frozen labels, or None if the labels are not frozen yet."""
-    paths = review_paths(version, root)
-    if not paths["labels"].exists() or not paths["meta"].exists():
+    """Agreement of the judge in use with the latest frozen labels, or None if none are frozen.
+
+    The labels carry the verdicts of the judge they were sampled with. For another judge
+    version, a saved measurement on the same frozen labels supplies its verdicts; without one
+    the block is marked STALE."""
+    revision = latest_revision(version, root)
+    if revision is None:
         return None
-    meta = json.loads(paths["meta"].read_text(encoding="utf-8"))
-    labels = [json.loads(line) for line in paths["labels"].read_text(encoding="utf-8").splitlines()]
-    return agreement_block(labels, judge_prompt, judge_model, meta)
+    labels, meta = load_labels(version, root, revision)
+    measured = None
+    if meta["judge_prompt"] != judge_prompt or meta["judge_model"] != judge_model:
+        path = measurement_path(version, root, judge_prompt.split(":")[0], revision)
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            same_judge = data["judge_prompt"] == judge_prompt and data["judge_model"] == judge_model
+            if same_judge and data["labels_sha256"] == meta["sha256"]:
+                measured = data
+                labels = [{**x, "judge_label": data["row_labels"].get(x["row_id"])} for x in labels]
+                meta = {**meta, "judge_prompt": judge_prompt, "judge_model": judge_model}
+    block = agreement_block(labels, judge_prompt, judge_model, meta)
+    block["measured_on_frozen_labels"] = measured is not None
+    block["unmatched"] = measured["unmatched"] if measured else []
+    return block
+
+
+def _ratio(a: str, b: str) -> float:
+    from difflib import SequenceMatcher
+
+    return SequenceMatcher(None, " ".join(a.lower().split()), " ".join(b.lower().split())).ratio()
+
+
+MATCH_RATIO = 0.6  # a re-judged claim counts as the labelled one at this text similarity
+
+
+def measure_judge(
+    judge_version: str,
+    judge_model: str,
+    labels: list[dict],
+    claim_text: dict[str, str],
+    records: dict[str, dict],
+    chunks: dict[str, dict],
+    llm,
+) -> tuple[dict[str, str | None], list[str], list]:
+    """Re-judge the labelled answers with another judge version, on the same passages as the
+    labelled units (donor passages for probes), and read off its verdict for each unit.
+
+    The deployed prompt re-extracts claims, so each labelled claim is matched to the closest
+    re-extracted claim (text similarity >= MATCH_RATIO); unmatched units are returned, not
+    guessed. Returns (row_id -> verdict or None, unmatched row ids, completions)."""
+    from medquery.eval.judge import JudgeFailed, judge
+    from medquery.retrieval.dense import Hit
+
+    groups: dict[tuple[str, str | None], list[dict]] = defaultdict(list)
+    for x in labels:
+        groups[(x["item_id"], x.get("donor_id") if x.get("probe") else None)].append(x)
+    verdicts: dict[str, str | None] = {}
+    unmatched: list[str] = []
+    completions: list = []
+    for (item_id, donor_id), units in sorted(
+        groups.items(), key=lambda g: (g[0][0], g[0][1] or "")
+    ):
+        record = records[item_id]
+        context = records[donor_id]["context_ids"] if donor_id else record["context_ids"]
+        hits = [Hit(chunks[cid], 0.0, n) for n, cid in enumerate(context, 1)]
+        try:
+            verdict, calls = judge(
+                record["question"],
+                hits,
+                record["answer"],
+                record["reference_answer"],
+                llm,
+                version=judge_version,
+                model=judge_model,
+            )
+        except JudgeFailed as exc:
+            completions += exc.completions
+            for x in units:
+                verdicts[x["row_id"]] = None
+                unmatched.append(x["row_id"])
+            continue
+        completions += calls
+        for x in units:
+            if x["unit"] == "answer":
+                verdicts[x["row_id"]] = verdict.correctness
+                continue
+            scored = [(_ratio(claim_text[x["row_id"]], c["text"]), c) for c in verdict.claims]
+            best = max(scored, key=lambda s: s[0], default=(0.0, None))
+            if best[0] >= MATCH_RATIO:
+                verdicts[x["row_id"]] = (
+                    "supported" if best[1]["supported_by_context"] else "unsupported"
+                )
+            else:
+                verdicts[x["row_id"]] = None
+                unmatched.append(x["row_id"])
+    return verdicts, sorted(unmatched), completions
 
 
 ALLOWED = {"claim": CLAIM_LABELS, "answer": ANSWER_LABELS}
@@ -294,13 +424,26 @@ class LabelError(Exception):
     pass
 
 
-def freeze_labels(labeller: str, version: str = REVIEW_VERSION, root: Path = GOLDEN_DIR) -> dict:
-    """Join hand labels (CSV) with the hidden judge verdicts (key) and freeze them."""
+def freeze_labels(
+    labeller: str, version: str = REVIEW_VERSION, root: Path = GOLDEN_DIR, revision: str = ""
+) -> dict:
+    """Join hand labels (CSV) with the hidden judge verdicts (key) and freeze them.
+
+    A revision (r2, ...) is a corrected label set frozen next to the earlier ones, which are
+    never changed; its meta names the set it supersedes and the rows that changed."""
     import csv
     import hashlib
     from datetime import date
 
-    paths = review_paths(version, root)
+    if revision not in REVISIONS:
+        raise LabelError(f"revision must be one of {REVISIONS[1:]}")
+    previous = None
+    if revision:
+        earlier = REVISIONS[REVISIONS.index(revision) - 1]
+        if not review_paths(version, root, earlier)["labels"].exists():
+            raise LabelError(f"cannot freeze {revision}: label set {earlier or 'v1'} is not frozen")
+        previous = (earlier, *load_labels(version, root, earlier))
+    paths = review_paths(version, root, revision)
     if paths["labels"].exists() or paths["meta"].exists():
         raise LabelError(
             f"{paths['labels'].name} already exists: frozen labels are never overwritten"
@@ -354,8 +497,23 @@ def freeze_labels(labeller: str, version: str = REVIEW_VERSION, root: Path = GOL
         "judge_model": key["meta"]["judge_model"],
         "judge_prompt": key["meta"]["judge_prompt"],
         "probes": key["meta"].get("probes"),
+        "revision": revision or "v1",
         "sha256": digest,
     }
+    if previous:
+        earlier, old_labels, old_meta = previous
+        old = {x["row_id"]: x for x in old_labels}
+        meta["supersedes"] = {
+            "revision": earlier or "v1",
+            "file": review_paths(version, root, earlier)["labels"].name,
+            "sha256": old_meta["sha256"],
+        }
+        meta["changed_rows"] = [
+            x["row_id"]
+            for x in labels
+            if (x["human_label"], x["notes"])
+            != (old[x["row_id"]]["human_label"], old[x["row_id"]]["notes"])
+        ]
     with atomic_write(paths["meta"]) as f:
         f.write(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
     return meta

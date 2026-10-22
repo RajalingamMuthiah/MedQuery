@@ -10,7 +10,7 @@ from pathlib import Path
 from medquery import config as settings
 from medquery import paths
 from medquery.eval.evidence import Evidence, EvidenceMapper
-from medquery.eval.judge import JUDGE_HASH, JUDGE_VERSION, JudgeFailed, judge
+from medquery.eval.judge import JUDGE_VERSION, JudgeFailed, judge, prompt_id
 from medquery.fileio import atomic_write, atomic_write_bytes, exclusive_lock
 from medquery.generation.answer import answer_from_hits
 from medquery.generation.prompts import ANSWER_HASH, ANSWER_VERSION
@@ -31,7 +31,7 @@ class RunConfig:
     judge: str = settings.JUDGE_MODEL
     include_quiz: bool = False
     answer_prompt: str = f"{ANSWER_VERSION}:{ANSWER_HASH}"
-    judge_prompt: str = f"{JUDGE_VERSION}:{JUDGE_HASH}"
+    judge_prompt: str = prompt_id(JUDGE_VERSION)
 
 
 CONFIGS = {"baseline": RunConfig()}
@@ -72,7 +72,13 @@ def evaluate_item(
     if not result.abstained:
         try:
             v, judge_completions = judge(
-                item["question"], context, result.text, item["reference_answer"], llm
+                item["question"],
+                context,
+                result.text,
+                item["reference_answer"],
+                llm,
+                version=config.judge_prompt.split(":")[0],
+                model=config.judge,
             )
             verdict = asdict(v)
         except JudgeFailed as exc:

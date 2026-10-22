@@ -1,6 +1,7 @@
 """Evaluation commands: python -m medquery.eval golden {generate [--dry-run] [--force], topup}."""
 
 import argparse
+import csv
 import json
 import math
 import sys
@@ -27,12 +28,21 @@ from medquery.eval.golden_gen import (
     to_items,
     topup,
 )
+from medquery.eval.judge import JUDGE_PROMPTS
+from medquery.eval.judge import prompt_id as judge_prompt_id
 from medquery.eval.judge_review import (
+    MATCH_RATIO,
     N_CLAIMS,
+    REVIEW_VERSION,
+    REVISIONS,
     LabelError,
     agreement_block,
     freeze_labels,
+    latest_revision,
     load_agreement,
+    load_labels,
+    measure_judge,
+    measurement_path,
     probe_units,
     review_paths,
     sample,
@@ -348,35 +358,31 @@ def cmd_judge_sample(run: str) -> int:
     return 0
 
 
-def cmd_judge_review_freeze(labeller: str) -> int:
-    try:
-        meta = freeze_labels(labeller)
-    except LabelError as exc:
-        print(f"freeze refused: {exc}")
-        return 1
-    review = review_paths()
-    labels = [
-        json.loads(line) for line in review["labels"].read_text(encoding="utf-8").splitlines()
-    ]
-    print(f"froze {meta['labels']} labels by {meta['labeller']} -> {review['labels'].name}")
-    print(f"labels sha256 {meta['sha256']}; judge {meta['judge_model']} {meta['judge_prompt']}")
-    block = agreement_block(labels, meta["judge_prompt"], meta["judge_model"], meta)
-    print(
-        f"\n{'group':<14} {'n':>3} {'probe':>5}  {'agreement [95% CI]':<26} {'kappa [95% CI]':<26}"
-    )
+def _fmt_ci(t) -> str:
+    if t[0] is None:
+        return "n/a"
+    return f"{t[0]:.3f}" + (f" [{t[1]:.3f}, {t[2]:.3f}]" if t[1] is not None else "")
+
+
+def print_agreement(block: dict, labels: list[dict], judge_name: str) -> None:
+    print(f"\n{judge_name}:")
+    print(f"{'group':<14} {'n':>3} {'probe':>5}  {'agreement [95% CI]':<26} {'kappa [95% CI]':<26}")
     for group in ("claim", "claim_natural", "claim_probe", "answer"):
         b = block[group]
-        a, k = b["agreement"], b["kappa"]
-
-        def fmt(t):
-            if t[0] is None:
-                return "n/a"
-            return f"{t[0]:.3f}" + (f" [{t[1]:.3f}, {t[2]:.3f}]" if t[1] is not None else "")
-
-        print(f"{group:<14} {b['n']:>3} {b['n_probe']:>5}  {fmt(a):<26} {fmt(k):<26}")
+        print(
+            f"{group:<14} {b['n']:>3} {b['n_probe']:>5}  {_fmt_ci(b['agreement']):<26} "
+            f"{_fmt_ci(b['kappa']):<26}"
+        )
         print(f"{'':<14} human {b['human_class_counts']}  judge {b['judge_class_counts']}")
-    disagreements = [x for x in labels if x["human_label"] != x["judge_label"]]
-    print(f"\n{len(disagreements)} disagreement(s):")
+    caught = block["natural_unsupported_caught"]
+    print(
+        f"natural claims you marked unsupported: {caught['human_unsupported']}; "
+        f"judge caught {caught['judge_caught']}"
+    )
+    disagreements = [
+        x for x in labels if x["judge_label"] is not None and x["human_label"] != x["judge_label"]
+    ]
+    print(f"{len(disagreements)} disagreement(s):")
     for x in disagreements:
         source = f"probe (passages from {x['donor_id']})" if x["probe"] else "natural"
         print(
@@ -384,6 +390,83 @@ def cmd_judge_review_freeze(labeller: str) -> int:
             f"you={x['human_label']}, judge={x['judge_label']}"
         )
         print(f"      note: {x['notes'] or '(none)'}")
+
+
+def cmd_judge_review_freeze(labeller: str, revision: str) -> int:
+    try:
+        meta = freeze_labels(labeller, revision=revision)
+    except LabelError as exc:
+        print(f"freeze refused: {exc}")
+        return 1
+    review = review_paths(revision=revision)
+    labels = [
+        json.loads(line) for line in review["labels"].read_text(encoding="utf-8").splitlines()
+    ]
+    print(
+        f"froze {meta['labels']} labels ({meta['revision']}) by {meta['labeller']} "
+        f"-> {review['labels'].name}"
+    )
+    print(f"labels sha256 {meta['sha256']}; judge {meta['judge_model']} {meta['judge_prompt']}")
+    if meta.get("supersedes"):
+        print(
+            f"supersedes {meta['supersedes']['file']} ({meta['supersedes']['sha256'][:12]}); "
+            f"changed rows: {meta['changed_rows']}"
+        )
+    block = agreement_block(labels, meta["judge_prompt"], meta["judge_model"], meta)
+    print_agreement(block, labels, meta["judge_prompt"])
+    return 0
+
+
+def cmd_judge_review_measure(judge_version: str) -> int:
+    revision = latest_revision()
+    if revision is None:
+        print("no frozen labels")
+        return 1
+    labels, meta = load_labels(REVIEW_VERSION, GOLDEN_DIR, revision)
+    review = review_paths(revision=revision)
+    with review["csv"].open(encoding="utf-8-sig", newline="") as f:
+        claim_text = {r["row_id"]: r["claim"] for r in csv.DictReader(f)}
+    records = {r["id"]: r for r in load_records(RUNS_DIR / meta["run_id"] / "items.jsonl")}
+    chunks = {c["id"]: c for c in load_chunks(include_quiz=True)}
+    model = meta["judge_model"]
+    try:
+        verdicts, unmatched, calls = measure_judge(
+            judge_version, model, labels, claim_text, records, chunks, get_client()
+        )
+    except QuotaExhausted as exc:
+        print(f"stopped: {exc}\nRe-run later; finished judge calls are cached.")
+        return 2
+    data = {
+        "judge_prompt": judge_prompt_id(judge_version),
+        "judge_model": model,
+        "labels_revision": meta.get("revision", "v1"),
+        "labels_sha256": meta["sha256"],
+        "row_labels": verdicts,
+        "unmatched": unmatched,
+        "match_ratio": MATCH_RATIO,
+        "usage": summarize(calls),
+    }
+    path = measurement_path(REVIEW_VERSION, GOLDEN_DIR, judge_version, revision)
+    with atomic_write(path) as f:
+        f.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    print(
+        f"wrote {path.relative_to(paths.ROOT)} (labels {meta.get('revision', 'v1')}, "
+        f"sha256 {meta['sha256'][:12]}); unmatched units: {unmatched or 'none'}"
+    )
+    print("\n".join(format_summary(summarize(calls))))
+    print_agreement(
+        agreement_block(labels, meta["judge_prompt"], model, meta),
+        labels,
+        f"{meta['judge_prompt']} (verdicts from sampling)",
+    )
+    measured = [{**x, "judge_label": verdicts.get(x["row_id"])} for x in labels]
+    print_agreement(
+        agreement_block(
+            measured, data["judge_prompt"], model, {**meta, "judge_prompt": data["judge_prompt"]}
+        ),
+        measured,
+        f"{data['judge_prompt']} (re-judged on the same frozen labels)",
+    )
     return 0
 
 
@@ -410,9 +493,19 @@ def main(argv: list[str] | None = None) -> int:
     jr = sub.add_parser("judge-review").add_subparsers(dest="action", required=True)
     jr_freeze = jr.add_parser("freeze", help="freeze hand labels and report agreement")
     jr_freeze.add_argument("--labeller", required=True, help="who labelled, recorded in meta")
+    jr_freeze.add_argument(
+        "--revision",
+        default="",
+        choices=list(REVISIONS),
+        help="freeze a corrected label set (r2, ...) next to earlier ones",
+    )
+    jr_measure = jr.add_parser("measure", help="re-judge the frozen labels with a judge version")
+    jr_measure.add_argument("--judge", required=True, choices=sorted(JUDGE_PROMPTS))
     args = parser.parse_args(argv)
     if args.group == "judge-review" and args.action == "freeze":
-        return cmd_judge_review_freeze(args.labeller)
+        return cmd_judge_review_freeze(args.labeller, args.revision)
+    if args.group == "judge-review" and args.action == "measure":
+        return cmd_judge_review_measure(args.judge)
     if args.group == "run":
         return cmd_run(args.split, args.config)
     if args.group == "judge-sample":

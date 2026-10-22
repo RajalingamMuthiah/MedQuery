@@ -1,4 +1,4 @@
-"""The LLM judge (judge_v1): one call per answered question.
+"""The LLM judge (judge_v1, judge_v2): one call per answered question.
 
 Claim support is decided ONLY from the retrieved passages. The reference answer comes last, in
 its own section, and is used only for the correctness field.
@@ -54,6 +54,40 @@ Reply with JSON: {{"claims": [{{"text": "...", "cited_ids": [], "supported_by_co
 "supported_by_cited": null}}], "relevancy": 5, "correctness": "correct", "rationale": "..."}}"""
 RETRY_MESSAGE = "Your reply was not valid ({error}). Reply again with the JSON object only."
 JUDGE_HASH = prompt_hash(JUDGE_SYSTEM, JUDGE_TEMPLATE, RETRY_MESSAGE)
+
+# judge_v2 targets the failure seen in hand labels (judge_review_v1, labels_r2): the judge
+# accepted claims whose numbers, ranges or qualifiers differ from the passage (130-139 vs
+# 120-139, crude vs age-adjusted). Only rules 3 and 4 change; everything else is identical.
+_V1_RULES = """\
+3. "supported_by_context": true only if at least one retrieved passage above fully supports the
+   claim. Decide this ONLY from the passages, never from your own knowledge and never from the
+   reference answer below.
+4. "supported_by_cited": true if the passages in cited_ids fully support the claim, false if they
+   do not, null if cited_ids is empty. Decide this ONLY from the passages."""
+_V2_RULES = """\
+3. "supported_by_context": true only if at least one retrieved passage above fully supports the
+   claim. Every number, range, unit, year or period, population or subgroup, and qualifier in
+   the claim (for example crude vs age-adjusted, systolic vs diastolic, adults vs children,
+   "at least" vs "more than") must match the passage EXACTLY. If any one of them differs, or the
+   passage gives that figure for a different measure, group or period, the claim is NOT
+   supported, even if it is close. Decide this ONLY from the passages, never from your own
+   knowledge and never from the reference answer below.
+4. "supported_by_cited": true if the passages in cited_ids fully support the claim under the same
+   exact-match rule as 3, false if they do not, null if cited_ids is empty. Decide this ONLY from
+   the passages."""
+if _V1_RULES not in JUDGE_TEMPLATE:
+    raise RuntimeError("judge_v1 rules text changed; update _V1_RULES before deriving judge_v2")
+JUDGE_TEMPLATE_V2 = JUDGE_TEMPLATE.replace(_V1_RULES, _V2_RULES)
+JUDGE_PROMPTS = {
+    "judge_v1": (JUDGE_TEMPLATE, JUDGE_HASH),
+    "judge_v2": (JUDGE_TEMPLATE_V2, prompt_hash(JUDGE_SYSTEM, JUDGE_TEMPLATE_V2, RETRY_MESSAGE)),
+}
+
+
+def prompt_id(version: str) -> str:
+    return f"{version}:{JUDGE_PROMPTS[version][1]}"
+
+
 JUDGE_SETTINGS = {"temperature": 0.0, "seed": 0, "reasoning_effort": "low", "max_tokens": 2000}
 
 
@@ -71,11 +105,12 @@ class JudgeFailed(Exception):
         self.completions = completions  # still counted in token and cost totals
 
 
-def judge_messages(question: str, hits: list[Hit], answer: str, reference: str) -> list[dict]:
+def judge_messages(
+    question: str, hits: list[Hit], answer: str, reference: str, version: str = JUDGE_VERSION
+) -> list[dict]:
     passages = "\n---\n".join(f"[{h.chunk['id']}]\n{h.chunk['text']}" for h in hits)
-    user = JUDGE_TEMPLATE.format(
-        question=question, passages=passages, answer=answer, reference=reference
-    )
+    template = JUDGE_PROMPTS[version][0]
+    user = template.format(question=question, passages=passages, answer=answer, reference=reference)
     return [{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": user}]
 
 
@@ -117,18 +152,24 @@ def validate(data: dict) -> Verdict:
 
 
 def judge(
-    question: str, hits: list[Hit], answer: str, reference: str, llm: LLM
+    question: str,
+    hits: list[Hit],
+    answer: str,
+    reference: str,
+    llm: LLM,
+    version: str = JUDGE_VERSION,
+    model: str = config.JUDGE_MODEL,
 ) -> tuple[Verdict, list[Completion]]:
     """Judge one answer. One retry on an invalid reply, then JudgeFailed (never silently dropped).
 
     The retry adds the bad reply and the error to the conversation, so it is a new request
     rather than a cache hit on the same invalid reply."""
-    messages = judge_messages(question, hits, answer, reference)
+    messages = judge_messages(question, hits, answer, reference, version)
     completions: list[Completion] = []
     for attempt in range(2):
         completion = llm.complete(
             messages,
-            model=config.JUDGE_MODEL,
+            model=model,
             response_format={"type": "json_object"},
             **JUDGE_SETTINGS,
         )
