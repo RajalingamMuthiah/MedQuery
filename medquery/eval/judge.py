@@ -159,6 +159,7 @@ def judge(
     llm: LLM,
     version: str = JUDGE_VERSION,
     model: str = config.JUDGE_MODEL,
+    seed: int = 0,
 ) -> tuple[Verdict, list[Completion]]:
     """Judge one answer. One retry on an invalid reply, then JudgeFailed (never silently dropped).
 
@@ -171,7 +172,7 @@ def judge(
             messages,
             model=model,
             response_format={"type": "json_object"},
-            **JUDGE_SETTINGS,
+            **{**JUDGE_SETTINGS, "seed": seed},
         )
         completions.append(completion)
         try:

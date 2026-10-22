@@ -113,8 +113,53 @@ def agreement_lines(block: dict | None) -> list[str]:
             f"{_fmt(k[0])} {_ci(k[1], k[2])} | {b['human_class_counts']} / "
             f"{b['judge_class_counts']} |"
         )
+    caught, rejected = block["natural_unsupported_caught"], block["natural_supported_rejected"]
+    lines += [
+        "",
+        f"Natural claims: the judge caught **{caught['judge_caught']} of "
+        f"{caught['human_unsupported']}** that the labeller marked unsupported, and wrongly "
+        f"rejected **{rejected['judge_rejected']} of {rejected['human_supported']}** marked "
+        "supported. With so few unsupported natural claims, kappa is unstable; read it together "
+        "with these counts.",
+        f"Labels: revision `{block.get('labels_revision', 'v1')}` by "
+        f"{block.get('labeller', 'unknown')}, sha256 `{block['labels_sha256']}`"
+        + (
+            f"; supersedes `{block['supersedes']['file']}` (`{block['supersedes']['sha256']}`)"
+            if block.get("supersedes")
+            else ""
+        )
+        + ".",
+    ]
+    if block.get("unmatched"):
+        lines.append(f"Units with no matching re-judged claim (excluded): {block['unmatched']}.")
+    return lines
+
+
+def history_lines(history: list[dict]) -> list[str]:
+    """Every judge measured on the same frozen labels, for comparison across judge changes."""
+    if not history:
+        return []
+    lines = [
+        "",
+        f"### Judge history on the same frozen labels (revision `{history[0]['labels_revision']}`)",
+        "",
+        "| judge model | prompt | natural unsupported caught | natural supported rejected | "
+        "probe agreement | answer agreement | answer kappa |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for row in history:
+        b = row["block"]
+        caught, rejected = b["natural_unsupported_caught"], b["natural_supported_rejected"]
+        lines.append(
+            f"| `{row['judge_model']}` | `{row['judge_prompt']}` | "
+            f"{caught['judge_caught']} of {caught['human_unsupported']} | "
+            f"{rejected['judge_rejected']} of {rejected['human_supported']} | "
+            f"{_fmt(b['claim_probe']['agreement'][0])} | {_fmt(b['answer']['agreement'][0])} | "
+            f"{_fmt(b['answer']['kappa'][0])} |"
+        )
     lines.append(
-        f"Labeller: {block.get('labeller', 'unknown')}. Labels sha256: `{block['labels_sha256']}`"
+        "The judge_v2 prompt's exact-match rule was written after seeing these labels, so its "
+        "measurement here is optimistic; it is re-validated on a fresh sample in Phase 3."
     )
     return lines
 
@@ -129,6 +174,7 @@ def markdown(
     git: dict,
     agreement: dict | None,
     created: str,
+    history: list[dict] | None = None,
 ) -> str:
     c, lat, cost = summary["counts"], summary["latency"], summary["cost"]
     dirty = "unknown" if git["dirty"] is None else ("DIRTY" if git["dirty"] else "clean")
@@ -147,11 +193,12 @@ def markdown(
         "| setting | value |",
         "|---|---|",
         *[f"| {k} | `{v}` |" for k, v in asdict(config).items()],
-        f"| list prices | {settings.PRICES_SOURCE} ({settings.PRICES_DATE}) |",
+        f"| list prices | {settings.price_note()} |",
         "",
         "## Judge validation",
         "",
         *agreement_lines(agreement),
+        *history_lines(history or []),
         "",
         "## Items",
         "",
@@ -267,11 +314,14 @@ def write_report(
     git: dict,
     agreement: dict | None,
     out_dir: Path = REPORTS_DIR,
+    history: list[dict] | None = None,
 ) -> list[Path]:
     created = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
     summary = summarize(records, config)
-    stem = f"{created[:10]}_{config.name}_{split}"
-    md = markdown(summary, config, split, run_id, golden_meta, chunks_sha, git, agreement, created)
+    stem = f"{created[:10]}_{config.name}_{split}_{run_id}"  # run id: never overwrite history
+    md = markdown(
+        summary, config, split, run_id, golden_meta, chunks_sha, git, agreement, created, history
+    )
     written = []
     for path, text in (
         (out_dir / f"{stem}.md", md),

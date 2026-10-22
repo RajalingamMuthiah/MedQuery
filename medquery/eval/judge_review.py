@@ -259,14 +259,32 @@ def agreement_block(labels: list[dict], judge_prompt: str, judge_model: str, met
     }
     out["labels_revision"] = meta.get("revision") or "v1"
     out["supersedes"] = meta.get("supersedes")
+    # Raw counts use matched units only: a unit whose re-judged claim could not be matched has
+    # no judge verdict (None) and is reported separately, never counted as caught or rejected.
     natural_unsupported = [
         x
         for x in labels
-        if x["unit"] == "claim" and not x.get("probe") and x["human_label"] == "unsupported"
+        if x["unit"] == "claim"
+        and not x.get("probe")
+        and x["human_label"] == "unsupported"
+        and x["judge_label"] is not None
     ]
     out["natural_unsupported_caught"] = {
         "human_unsupported": len(natural_unsupported),
         "judge_caught": sum(x["judge_label"] == "unsupported" for x in natural_unsupported),
+    }
+    natural_supported = [
+        x
+        for x in labels
+        if x["unit"] == "claim"
+        and not x.get("probe")
+        and x["human_label"] == "supported"
+        and x["judge_label"] is not None
+    ]
+    out["unmatched_units"] = sorted(x["row_id"] for x in labels if x["judge_label"] is None)
+    out["natural_supported_rejected"] = {
+        "human_supported": len(natural_supported),
+        "judge_rejected": sum(x["judge_label"] == "unsupported" for x in natural_supported),
     }
     for unit, member in groups.items():
         # A judge verdict can be missing (None) when a re-judged claim could not be matched.
@@ -313,8 +331,46 @@ def load_labels(version: str, root: Path, revision: str) -> tuple[list[dict], di
     return [json.loads(line) for line in text.splitlines()], meta
 
 
-def measurement_path(version: str, root: Path, judge_version: str, revision: str) -> Path:
-    return root / f"judge_review_{version}.measure_{judge_version}_{revision or 'v1'}.json"
+def measurement_path(
+    version: str, root: Path, judge_version: str, revision: str, model: str, seed: int = 0
+) -> Path:
+    """One file per (judge prompt version, judge model, label revision, seed)."""
+    slug = model.replace("/", "_")
+    suffix = f"_seed{seed}" if seed else ""
+    return root / (
+        f"judge_review_{version}.measure_{judge_version}_{slug}_{revision or 'v1'}{suffix}.json"
+    )
+
+
+def judge_history(version: str = REVIEW_VERSION, root: Path = GOLDEN_DIR) -> list[dict]:
+    """Every judge measured on the latest frozen labels: the judge the labels were sampled with,
+    then each saved re-measurement (seed 0 only; other seeds are stability checks)."""
+    revision = latest_revision(version, root)
+    if revision is None:
+        return []
+    labels, meta = load_labels(version, root, revision)
+    rows = [(meta["judge_model"], meta["judge_prompt"], labels, "sampling verdicts")]
+    for path in sorted(root.glob(f"judge_review_{version}.measure_*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("seed", 0) or data["labels_sha256"] != meta["sha256"]:
+            continue
+        measured = [{**x, "judge_label": data["row_labels"].get(x["row_id"])} for x in labels]
+        rows.append((data["judge_model"], data["judge_prompt"], measured, path.name))
+    out = []
+    for model, prompt, judged, source in rows:
+        block = agreement_block(
+            judged, prompt, model, {**meta, "judge_prompt": prompt, "judge_model": model}
+        )
+        out.append(
+            {
+                "judge_model": model,
+                "judge_prompt": prompt,
+                "source": source,
+                "labels_revision": revision or "v1",
+                "block": block,
+            }
+        )
+    return out
 
 
 def load_agreement(
@@ -331,7 +387,7 @@ def load_agreement(
     labels, meta = load_labels(version, root, revision)
     measured = None
     if meta["judge_prompt"] != judge_prompt or meta["judge_model"] != judge_model:
-        path = measurement_path(version, root, judge_prompt.split(":")[0], revision)
+        path = measurement_path(version, root, judge_prompt.split(":")[0], revision, judge_model)
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
             same_judge = data["judge_prompt"] == judge_prompt and data["judge_model"] == judge_model
@@ -352,6 +408,70 @@ def _ratio(a: str, b: str) -> float:
 
 
 MATCH_RATIO = 0.6  # a re-judged claim counts as the labelled one at this text similarity
+CONTAINMENT = 0.7  # ...or as a part of it when this share of its content words is in it
+_STOP = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "of",
+        "in",
+        "on",
+        "for",
+        "to",
+        "and",
+        "or",
+        "with",
+        "by",
+        "as",
+        "at",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "that",
+        "this",
+        "these",
+        "those",
+        "it",
+        "its",
+        "their",
+        "from",
+        "which",
+        "who",
+        "than",
+        "then",
+        "also",
+    ]
+)
+
+
+def _content_words(text: str) -> set[str]:
+    import re
+
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in _STOP}
+
+
+def matching_parts(labelled: str, claims: list[dict]) -> list[dict]:
+    """Re-extracted claims that make up a labelled claim.
+
+    A different judge model splits answers differently: a compound labelled claim may come back
+    as several atomic claims, possibly reworded. Parts are claims whose content words are mostly
+    (>= CONTAINMENT) inside the labelled claim; failing that, the single most similar claim if
+    its text similarity is >= MATCH_RATIO."""
+    words = _content_words(labelled)
+    parts = [
+        c
+        for c in claims
+        if (cw := _content_words(c["text"])) and len(cw & words) / len(cw) >= CONTAINMENT
+    ]
+    if parts:
+        return parts
+    scored = [(_ratio(labelled, c["text"]), c) for c in claims]
+    best = max(scored, key=lambda s: s[0], default=(0.0, None))
+    return [best[1]] if best[0] >= MATCH_RATIO else []
 
 
 def measure_judge(
@@ -362,13 +482,14 @@ def measure_judge(
     records: dict[str, dict],
     chunks: dict[str, dict],
     llm,
+    seed: int = 0,
 ) -> tuple[dict[str, str | None], list[str], list]:
     """Re-judge the labelled answers with another judge version, on the same passages as the
     labelled units (donor passages for probes), and read off its verdict for each unit.
 
-    The deployed prompt re-extracts claims, so each labelled claim is matched to the closest
-    re-extracted claim (text similarity >= MATCH_RATIO); unmatched units are returned, not
-    guessed. Returns (row_id -> verdict or None, unmatched row ids, completions)."""
+    The deployed prompt re-extracts claims, so each labelled claim is mapped to the re-extracted
+    claims that make it up (matching_parts); it is unsupported if any part is. Unmatched units
+    are returned, not guessed. Returns (row_id -> verdict or None, unmatched ids, completions)."""
     from medquery.eval.judge import JudgeFailed, judge
     from medquery.retrieval.dense import Hit
 
@@ -393,6 +514,7 @@ def measure_judge(
                 llm,
                 version=judge_version,
                 model=judge_model,
+                seed=seed,
             )
         except JudgeFailed as exc:
             completions += exc.completions
@@ -405,12 +527,10 @@ def measure_judge(
             if x["unit"] == "answer":
                 verdicts[x["row_id"]] = verdict.correctness
                 continue
-            scored = [(_ratio(claim_text[x["row_id"]], c["text"]), c) for c in verdict.claims]
-            best = max(scored, key=lambda s: s[0], default=(0.0, None))
-            if best[0] >= MATCH_RATIO:
-                verdicts[x["row_id"]] = (
-                    "supported" if best[1]["supported_by_context"] else "unsupported"
-                )
+            parts = matching_parts(claim_text[x["row_id"]], verdict.claims)
+            if parts:  # supported only if every part is supported
+                supported = all(p["supported_by_context"] for p in parts)
+                verdicts[x["row_id"]] = "supported" if supported else "unsupported"
             else:
                 verdicts[x["row_id"]] = None
                 unmatched.append(x["row_id"])

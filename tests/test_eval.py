@@ -781,7 +781,7 @@ def test_load_agreement_uses_matching_measurement_else_marks_stale(tmp_path):
     v1 = load_agreement("judge_v1:x", "m", version="t", root=tmp_path)
     assert not v1["stale"] and v1["natural_unsupported_caught"]["judge_caught"] == 0
     assert load_agreement("judge_v2:y", "m", version="t", root=tmp_path)["stale"]
-    path = measurement_path("t", tmp_path, "judge_v2", "")
+    path = measurement_path("t", tmp_path, "judge_v2", "", "m")
     path.write_text(
         json.dumps(
             {
@@ -872,3 +872,42 @@ def test_measure_judge_aligns_claims_and_uses_donor_passages_for_probes():
     assert unmatched == ["r4"] and len(calls) == 2  # one call per (item, passages) group
     assert any("text of donor" in p for p in judge_llm.passages_seen)
     assert any("text of own" in p for p in judge_llm.passages_seen)
+
+
+def test_compound_labelled_claim_maps_to_its_atomic_parts():
+    from medquery.eval.judge_review import matching_parts
+
+    labelled = (
+        "The two new CPT codes effective in 2020 are 99473, which covers training and "
+        "device calibration, and 99474, which covers ongoing hypertension management."
+    )
+    parts = [
+        {
+            "text": "CPT code 99473 covers training and device calibration.",
+            "supported_by_context": True,
+        },
+        {
+            "text": "CPT code 99474 covers ongoing hypertension management.",
+            "supported_by_context": False,
+        },
+        {"text": "Patients should reduce sodium intake.", "supported_by_context": True},
+    ]
+    found = matching_parts(labelled, parts)
+    assert [p["text"] for p in found] == [parts[0]["text"], parts[1]["text"]]
+    # A reordered paraphrase of a single claim also matches.
+    reordered = [
+        {
+            "text": "The National Center for Health Statistics supplied the mortality "
+            "statistics for states of at least 100,000.",
+            "supported_by_context": True,
+        }
+    ]
+    assert (
+        matching_parts(
+            "Mortality statistics for states of at least 100,000 were supplied by "
+            "the National Center for Health Statistics.",
+            reordered,
+        )
+        == reordered
+    )
+    assert matching_parts("Something entirely different about insulin pumps.", parts) == []

@@ -38,6 +38,7 @@ from medquery.eval.judge_review import (
     LabelError,
     agreement_block,
     freeze_labels,
+    judge_history,
     latest_revision,
     load_agreement,
     load_labels,
@@ -300,7 +301,17 @@ def cmd_run(split: str, config_name: str) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     agreement = load_agreement(config.judge_prompt, config.judge)
-    written = write_report(records, config, split, rid, golden_meta, chunks_sha, git, agreement)
+    written = write_report(
+        records,
+        config,
+        split,
+        rid,
+        golden_meta,
+        chunks_sha,
+        git,
+        agreement,
+        history=judge_history(),
+    )
     for path in written:
         print(f"wrote {path.relative_to(paths.ROOT)}")
     return 0
@@ -375,9 +386,12 @@ def print_agreement(block: dict, labels: list[dict], judge_name: str) -> None:
         )
         print(f"{'':<14} human {b['human_class_counts']}  judge {b['judge_class_counts']}")
     caught = block["natural_unsupported_caught"]
+    rejected = block["natural_supported_rejected"]
     print(
-        f"natural claims you marked unsupported: {caught['human_unsupported']}; "
-        f"judge caught {caught['judge_caught']}"
+        f"natural unsupported caught: {caught['judge_caught']} of {caught['human_unsupported']}; "
+        f"natural supported wrongly rejected: {rejected['judge_rejected']} of "
+        f"{rejected['human_supported']} (matched units; unmatched: "
+        f"{block['unmatched_units'] or 'none'})"
     )
     disagreements = [
         x for x in labels if x["judge_label"] is not None and x["human_label"] != x["judge_label"]
@@ -417,7 +431,7 @@ def cmd_judge_review_freeze(labeller: str, revision: str) -> int:
     return 0
 
 
-def cmd_judge_review_measure(judge_version: str) -> int:
+def cmd_judge_review_measure(judge_version: str, model: str, seed: int) -> int:
     revision = latest_revision()
     if revision is None:
         print("no frozen labels")
@@ -428,17 +442,20 @@ def cmd_judge_review_measure(judge_version: str) -> int:
         claim_text = {r["row_id"]: r["claim"] for r in csv.DictReader(f)}
     records = {r["id"]: r for r in load_records(RUNS_DIR / meta["run_id"] / "items.jsonl")}
     chunks = {c["id"]: c for c in load_chunks(include_quiz=True)}
-    model = meta["judge_model"]
     try:
         verdicts, unmatched, calls = measure_judge(
-            judge_version, model, labels, claim_text, records, chunks, get_client()
+            judge_version, model, labels, claim_text, records, chunks, get_client(), seed=seed
         )
     except QuotaExhausted as exc:
         print(f"stopped: {exc}\nRe-run later; finished judge calls are cached.")
         return 2
+    except LLMError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     data = {
         "judge_prompt": judge_prompt_id(judge_version),
         "judge_model": model,
+        "seed": seed,
         "labels_revision": meta.get("revision", "v1"),
         "labels_sha256": meta["sha256"],
         "row_labels": verdicts,
@@ -446,7 +463,7 @@ def cmd_judge_review_measure(judge_version: str) -> int:
         "match_ratio": MATCH_RATIO,
         "usage": summarize(calls),
     }
-    path = measurement_path(REVIEW_VERSION, GOLDEN_DIR, judge_version, revision)
+    path = measurement_path(REVIEW_VERSION, GOLDEN_DIR, judge_version, revision, model, seed)
     with atomic_write(path) as f:
         f.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     print(
@@ -454,19 +471,38 @@ def cmd_judge_review_measure(judge_version: str) -> int:
         f"sha256 {meta['sha256'][:12]}); unmatched units: {unmatched or 'none'}"
     )
     print("\n".join(format_summary(summarize(calls))))
-    print_agreement(
-        agreement_block(labels, meta["judge_prompt"], model, meta),
-        labels,
-        f"{meta['judge_prompt']} (verdicts from sampling)",
-    )
     measured = [{**x, "judge_label": verdicts.get(x["row_id"])} for x in labels]
     print_agreement(
         agreement_block(
             measured, data["judge_prompt"], model, {**meta, "judge_prompt": data["judge_prompt"]}
         ),
         measured,
-        f"{data['judge_prompt']} (re-judged on the same frozen labels)",
+        f"{model} {data['judge_prompt']} seed {seed} (re-judged on the same frozen labels)",
     )
+    return 0
+
+
+def cmd_judge_review_stability(judge_version: str, model: str, seeds: list[int]) -> int:
+    """Verdict flips between seeds for the same judge on the same frozen labels."""
+    revision = latest_revision()
+    runs = []
+    for seed in seeds:
+        path = measurement_path(REVIEW_VERSION, GOLDEN_DIR, judge_version, revision, model, seed)
+        if not path.exists():
+            print(f"missing {path.name}: run `judge-review measure --seed {seed}` first")
+            return 1
+        runs.append(json.loads(path.read_text(encoding="utf-8"))["row_labels"])
+    labels, _ = load_labels(REVIEW_VERSION, GOLDEN_DIR, revision)
+    print(f"{model} {judge_version}: verdict stability across seeds {seeds} (labels {revision})")
+    for unit in ("claim", "answer"):
+        rows = [x["row_id"] for x in labels if x["unit"] == unit]
+        both = [r for r in rows if all(run.get(r) is not None for run in runs)]
+        flips = [r for r in both if len({run[r] for run in runs}) > 1]
+        print(
+            f"  {unit:<6} {len(flips)} of {len(both)} verdicts changed"
+            f"{(' (' + ', '.join(flips) + ')') if flips else ''}"
+            f"; {len(rows) - len(both)} unmatched in some seed"
+        )
     return 0
 
 
@@ -501,11 +537,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     jr_measure = jr.add_parser("measure", help="re-judge the frozen labels with a judge version")
     jr_measure.add_argument("--judge", required=True, choices=sorted(JUDGE_PROMPTS))
+    jr_measure.add_argument("--model", default=config.JUDGE_MODEL)
+    jr_measure.add_argument("--seed", type=int, default=0)
+    jr_stab = jr.add_parser("stability", help="verdict flips across seeds on the frozen labels")
+    jr_stab.add_argument("--judge", required=True, choices=sorted(JUDGE_PROMPTS))
+    jr_stab.add_argument("--model", default=config.JUDGE_MODEL)
+    jr_stab.add_argument("--seeds", type=int, nargs="+", default=[0, 1])
     args = parser.parse_args(argv)
     if args.group == "judge-review" and args.action == "freeze":
         return cmd_judge_review_freeze(args.labeller, args.revision)
     if args.group == "judge-review" and args.action == "measure":
-        return cmd_judge_review_measure(args.judge)
+        return cmd_judge_review_measure(args.judge, args.model, args.seed)
+    if args.group == "judge-review" and args.action == "stability":
+        return cmd_judge_review_stability(args.judge, args.model, args.seeds)
     if args.group == "run":
         return cmd_run(args.split, args.config)
     if args.group == "judge-sample":
