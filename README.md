@@ -52,6 +52,30 @@ Reports go to [medquery/eval/reports/](medquery/eval/reports/). Each records:
   - 13 of the claims are *mismatched-context probes*: an answer judged against another question's passages. They're used because natural answers rarely contain unsupported claims.
   - Reports give % agreement and Cohen's kappa, separately for natural claims, probes and answers.
 
+### Baseline results (Phase 2)
+These are copied from the two reports below, which were produced from clean commits. Re-running the same command reproduces them exactly, because every LLM call is cached. Values are shown with their 95% bootstrap CI.
+
+| Metric | Dev (44 questions) | Test (23 questions) |
+|---|---|---|
+| Answer correctness | 0.735 [0.588, 0.864] | 0.611 [0.368, 0.812] |
+| Faithfulness | 0.875 [0.754, 0.968] | 0.909 [0.700, 1.000] |
+| Claim hallucination rate | 0.095 [0.033, 0.177] | 0.033 [0.000, 0.137] |
+| Context precision | 0.403 [0.289, 0.517] | 0.335 [0.173, 0.516] |
+| Context recall | 0.676 [0.515, 0.817] | 0.611 [0.406, 0.824] |
+| Recall@5 / recall@10 | 0.662 / 0.779 | 0.611 / 0.750 |
+| MRR | 0.481 [0.348, 0.608] | 0.373 [0.226, 0.547] |
+| Citation accuracy | 0.871 [0.787, 0.943] | 0.967 [0.863, 1.000] |
+| Abstention accuracy | 0.841 [0.727, 0.932] | 0.696 [0.521, 0.870] |
+| False-abstention rate | 0.206 [0.086, 0.364] | 0.389 [0.188, 0.632] |
+| Latency p50 / p95, end to end | 0.69 s / 1.11 s | 0.75 s / 1.62 s |
+| Generation cost per query (list price) | $0.000196 | $0.000184 |
+
+Sources:
+- dev: [2026-10-22_baseline_dev_e1f69bdb8e0a.md](medquery/eval/reports/2026-10-22_baseline_dev_e1f69bdb8e0a.md);
+- test: [2026-10-22_baseline_test_b2bcda7e0fda.md](medquery/eval/reports/2026-10-22_baseline_test_b2bcda7e0fda.md).
+
+The baseline's main weakness is **false abstention**: it declines answerable questions that its top-5 dense retrieval doesn't surface (recall@5 is about 0.6–0.7). Phase 3's retrieval upgrades target this.
+
 ### Metric definitions
 Every quality metric has a 95% percentile bootstrap CI: 1,000 resamples over questions, seed 0. "Judge" means OpenAI `gpt-6.1-sol` with prompt `judge_v1`, used as an LLM judge (one call per answered question). Claim support is decided only from the retrieved passages, and the reference answer is used only for correctness.
 
