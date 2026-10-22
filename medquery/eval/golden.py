@@ -11,7 +11,7 @@ from pathlib import Path
 
 from medquery import paths
 from medquery.eval.evidence import Evidence, EvidenceMapper, normalise
-from medquery.fileio import atomic_write
+from medquery.fileio import atomic_write, atomic_write_bytes
 
 GOLDEN_DIR = paths.ROOT / "medquery" / "eval" / "golden"
 TYPES = ("factual", "table", "multi-chunk", "superseded", "unanswerable")
@@ -169,6 +169,20 @@ def write_review_csv(path: Path, rows: list[dict]) -> None:
     writer.writerows(rows)
     with atomic_write(path) as f:
         f.write("﻿" + buffer.getvalue())
+
+
+def append_review_csv(path: Path, rows: list[dict]) -> None:
+    """Append rows without rewriting the file: existing bytes (BOM, quoting, line endings, hand
+    edits) are kept exactly. New rows use the file's own line ending. Written atomically."""
+    old = path.read_bytes()
+    newline = "\r\n" if b"\r\n" in old else "\n"
+    buffer = io.StringIO()
+    csv.DictWriter(buffer, fieldnames=REVIEW_COLUMNS, lineterminator=newline).writerows(rows)
+    prefix = old if old.endswith(b"\n") else old + newline.encode()
+    new = prefix + buffer.getvalue().encode("utf-8")
+    if not new.startswith(old):
+        raise RuntimeError("append would change existing bytes")
+    atomic_write_bytes(path, new)
 
 
 def read_review_csv(path: Path) -> list[dict]:

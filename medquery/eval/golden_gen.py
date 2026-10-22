@@ -8,10 +8,11 @@ import json
 import random
 import re
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from medquery import config, paths
-from medquery.eval.evidence import Evidence, EvidenceMapper
+from medquery.eval.evidence import Evidence, EvidenceMapper, normalise
 from medquery.eval.golden import (
     Item,
     check_evidence,
@@ -139,6 +140,7 @@ class Task:
     n: int
     instruction: str = ""  # overrides TYPE_INSTRUCTIONS[type] (a new, versioned instruction)
     prompt_id: str = ""  # recorded as gen_prompt; defaults to golden_gen_v1
+    template: str = ""  # overrides UNANSWERABLE_TEMPLATE (a new, versioned template)
 
 
 @dataclass
@@ -263,7 +265,8 @@ def generation_messages(task: Task, docs: dict[str, Document]) -> list[dict]:
     pages = render_pages(task, docs)
     if task.type == "unanswerable":
         titles = "\n".join(f"- {d.title}" for d in docs.values())
-        user = UNANSWERABLE_TEMPLATE.format(pages=pages, titles=titles, n=task.n)
+        template = task.template or UNANSWERABLE_TEMPLATE
+        user = template.format(pages=pages, titles=titles, n=task.n)
     else:
         scope = "these two pages together" if len(task.pages) == 2 else "this page"
         user = ANSWERABLE_TEMPLATE.format(
@@ -371,14 +374,31 @@ def generate(
     accepted: list[str] = []
     log(f"{len(tasks)} generation calls planned: {dict(Counter(t.type for t in tasks))}")
 
+    verify = v1_verifier(retriever, scan, llm)
     for number, task in enumerate(tasks, 1):
-        _run_task(task, docs, mapper, scan, retriever, llm, accepted, result)
+        _run_task(task, docs, mapper, llm, accepted, result, verify)
         pages_used = [(p.doc_id, p.page) for p in task.pages]
         log(f"  [{number}/{len(tasks)}] {task.type:<12} {task.topic:<12} {pages_used}")
     return result
 
 
-def _run_task(task, docs, mapper, scan, retriever, llm, accepted, result, extra_fields=None) -> int:
+Verifier = Callable[[str], tuple[dict, list[Completion], str | None]]
+
+
+def v1_verifier(retriever: Retriever, scan: KeywordScan, llm: LLM) -> Verifier:
+    """unanswerable_check_v1: one judge call over 6 dense + 6 keyword passages."""
+
+    def verify(question: str):
+        verdict, check = verify_unanswerable(question, retriever, scan, llm)
+        found = verdict.get("answer_found") or verdict.get("partial")
+        return verdict, [check], "answer found in corpus by verification check" if found else None
+
+    return verify
+
+
+def _run_task(
+    task, docs, mapper, llm, accepted, result, verify: Verifier, extra_fields=None
+) -> int:
     """One author call, then validation, one rewrite if a question copies the page, and the
     unanswerability check. Appends every candidate to `result`; returns how many were accepted."""
     completion = llm.complete(
@@ -415,12 +435,12 @@ def _run_task(task, docs, mapper, scan, retriever, llm, accepted, result, extra_
                     reason = f"after one rewrite: {reason}"
             else:
                 reason = "rewrite reply was not valid JSON"
+        if task.type == "unanswerable" and raw.get("premises_on_page"):
+            extra["premises_on_page"] = raw["premises_on_page"]
         if reason is None and task.type == "unanswerable":
-            verdict, check = verify_unanswerable(raw["question"], retriever, scan, llm)
-            result.completions.append(check)
+            verdict, checks, reason = verify(raw["question"])
+            result.completions.extend(checks)
             extra["verification"] = verdict
-            if verdict.get("answer_found") or verdict.get("partial"):
-                reason = "answer found in corpus by verification check"
         if reason is None:
             accepted.append(raw["question"])
             n_accepted += 1
@@ -530,7 +550,6 @@ SUPERSEDED_V2_HASH = prompt_hash(GEN_SYSTEM, ANSWERABLE_TEMPLATE, REPHRASE_TEMPL
 SUBSTANTIVE_RE = re.compile(
     r"mm ?hg|therapy|drug|diuretic|lifestyle|sodium|classification|goal|treat", re.IGNORECASE
 )
-TOPUP_BATCH = "topup1"
 
 
 @dataclass(frozen=True)
@@ -542,6 +561,9 @@ class TopupGroup:
     target: int  # accepted questions wanted
     max_calls: int  # stop trying after this many author calls
     per_call: int
+    template: str = ""  # versioned unanswerable template (topup2)
+    prompt_id: str = ""
+    verifier: str = "v1"  # "v1" or the stricter "v2"
 
 
 TOPUP_GROUPS = (
@@ -557,6 +579,185 @@ TOPUP_GROUPS = (
     TopupGroup("jnc7-substantive", "superseded", "hypertension", ("htn-jnc7-express",), 3, 6, 1),
     TopupGroup("tb-1964-ocr", "factual", "tuberculosis", ("tb-reported-1964",), 2, 5, 1),
 )
+
+# --- Top-up 2: stricter TB unanswerables (6 of 8 earlier ones were answerable or traps) ---
+
+UNANSWERABLE_TEMPLATE_V2 = """{pages}
+
+The whole document collection contains only these documents:
+{titles}
+
+Write {n} question(s) that a reader of this page could plausibly ask next, whose specific answer
+is NOT on this page and is unlikely to be in any document listed above.
+Strict rules:
+- Every drug, regimen, dose schedule, test, group, recommendation or fact that the question
+  mentions or takes for granted must be stated on this page. Do not invent or assume drugs,
+  regimens, schedules, studies, numbers or facts: no false premises.
+- Ask for a specific detail about those established things that the page does not give, for
+  example a figure, a subgroup, a timing or a comparison these documents do not report.
+- Stay on the same topic: no trick questions, no other diseases, no questions about the documents.
+- Write each question in your own words. Never copy 6 or more consecutive words from the page.
+- No yes/no questions.
+Reply with JSON: {{"items": [{{"question": "...", "why_not_answerable": "...",
+"premises_on_page": ["..."]}}]}}"""
+UNANSWERABLE_V2_HASH = prompt_hash(GEN_SYSTEM, UNANSWERABLE_TEMPLATE_V2, REPHRASE_TEMPLATE)
+
+PREMISE_TEMPLATE = """Question: {question}
+
+List every presupposition of this question: each thing it takes as given (that a drug, regimen,
+dose schedule, test, group, recommendation, study or fact exists or is true). Do not list the
+thing being asked for. For each, give 1-3 key_terms: the shortest specific wording that must
+appear in a document for the presupposition to hold (a drug, regimen, test or named entity, not
+generic words such as "patients" or "treatment").
+Reply with JSON: {{"presuppositions": [{{"statement": "...", "key_terms": ["..."]}}]}}"""
+VERIFY_V2_TEMPLATE = """Question: {question}
+
+Presuppositions of the question:
+{presuppositions}
+
+Passages:
+{passages}
+
+Using only these passages:
+1. Does any passage contain the information needed to answer the question, fully or partly?
+2. For each presupposition (by number): is it supported by a passage, contradicted by a passage,
+   or not addressed?
+Reply with JSON: {{"answer_found": true|false, "partial": true|false, "passage_ids": [],
+"presuppositions": [{{"number": 1, "status": "supported"|"contradicted"|"not_addressed"}}],
+"explanation": "..."}}"""
+VERIFY_V2_HASH = prompt_hash(VERIFY_SYSTEM, PREMISE_TEMPLATE, VERIFY_V2_TEMPLATE)
+VERIFY_V2_DENSE_K = VERIFY_V2_KEYWORD_K = 15
+# 30 passages are about 9K tokens, over the 8K tokens/min a single request may use, so the
+# judge sees them in batches; any batch that finds the answer or a contradiction rejects.
+VERIFY_V2_BATCH_TOKENS = 4500
+
+TOPUP2_GROUPS = (
+    TopupGroup(
+        "tb-unanswerable-strict",
+        "unanswerable",
+        "tuberculosis",
+        ("tb-core-curriculum", "tb-ltbi-2020", "tb-qa-2021"),
+        target=6,
+        max_calls=16,
+        per_call=1,
+        template=UNANSWERABLE_TEMPLATE_V2,
+        prompt_id=f"golden_gen_v1+unanswerable_v2:{UNANSWERABLE_V2_HASH}",
+        verifier="v2",
+    ),
+)
+TOPUPS = {"topup1": (TOPUP_GROUPS, SEED + 1), "topup2": (TOPUP2_GROUPS, SEED + 2)}
+
+
+def batch_passages(chunks: list[dict], budget: int = VERIFY_V2_BATCH_TOKENS) -> list[list[dict]]:
+    """Group passages so each judge request stays under `budget` estimated tokens."""
+    batches: list[list[dict]] = []
+    size = 0
+    for chunk in chunks:
+        tokens = int((len(chunk["text"]) + len(chunk["id"]) + 4) / 3.5)
+        if batches and size + tokens <= budget:
+            batches[-1].append(chunk)
+            size += tokens
+        else:
+            batches.append([chunk])
+            size = tokens
+    return batches
+
+
+def term_in_corpus(term: str, corpus: str) -> bool:
+    """Whole-word match of a normalised term in the normalised corpus text."""
+    needle = normalise(term)
+    if not needle:
+        return True
+    return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", corpus) is not None
+
+
+def v2_verifier(retriever: Retriever, scan: KeywordScan, llm: LLM, chunks: list[dict]) -> Verifier:
+    """unanswerable_check_v2: false-premise check, then 15 dense + 15 keyword passages in batches.
+
+    Accept only if no passage answers the question (fully or partly), no presupposition is
+    contradicted, and every presupposition is supported by at least one passage."""
+    corpus = normalise("\n".join(c["text"] for c in chunks if c["kind"] != "quiz"))
+
+    def judge(content: str, max_tokens: int) -> Completion:
+        messages = [
+            {"role": "system", "content": VERIFY_SYSTEM},
+            {"role": "user", "content": content},
+        ]
+        return llm.complete(
+            messages,
+            model=config.JUDGE_MODEL,
+            max_tokens=max_tokens,
+            reasoning_effort="low",
+            response_format={"type": "json_object"},
+        )
+
+    def verify(question: str):
+        completions: list[Completion] = []
+        verdict: dict = {"version": f"unanswerable_check_v2:{VERIFY_V2_HASH}"}
+        first = judge(PREMISE_TEMPLATE.format(question=question), 700)
+        completions.append(first)
+        try:
+            premises = parse_json(first.text).get("presuppositions", [])
+            premises = [p for p in premises if isinstance(p, dict) and p.get("statement")]
+        except (json.JSONDecodeError, AttributeError):
+            return verdict, completions, "verification reply was not valid JSON"
+        verdict["presuppositions"] = premises
+        missing = [
+            t
+            for p in premises
+            for t in p.get("key_terms", [])
+            if not term_in_corpus(str(t), corpus)
+        ]
+        if missing:
+            verdict["missing_terms"] = missing
+            return verdict, completions, f"false premise: {missing[0]!r} is not in the corpus"
+
+        hits, _ = retriever.retrieve(question, VERIFY_V2_DENSE_K)
+        passages = [h.chunk for h in hits]
+        passages += scan.top(question, VERIFY_V2_KEYWORD_K, {c["id"] for c in passages})
+        verdict["checked_ids"] = [c["id"] for c in passages]
+        listed = "\n".join(f"{n}. {p['statement']}" for n, p in enumerate(premises, 1)) or "(none)"
+        supported: set[int] = set()
+        verdict["batches"] = []
+        for batch in batch_passages(passages):
+            text = "\n---\n".join(f"[{c['id']}]\n{c['text']}" for c in batch)
+            check = judge(
+                VERIFY_V2_TEMPLATE.format(question=question, presuppositions=listed, passages=text),
+                900,
+            )
+            completions.append(check)
+            try:
+                result = parse_json(check.text)
+            except json.JSONDecodeError:
+                return verdict, completions, "verification reply was not valid JSON"
+            verdict["batches"].append({"ids": [c["id"] for c in batch], **result})
+            if result.get("answer_found") or result.get("partial"):
+                return verdict, completions, "answer found in corpus by verification check (v2)"
+            for status in result.get("presuppositions", []):
+                if not isinstance(status, dict):
+                    continue
+                if status.get("status") == "contradicted":
+                    return (
+                        verdict,
+                        completions,
+                        (
+                            f"false premise: presupposition {status.get('number')} is contradicted "
+                            "by the corpus"
+                        ),
+                    )
+                if status.get("status") == "supported":
+                    supported.add(int(status.get("number", 0)))
+        unsupported = [n for n in range(1, len(premises) + 1) if n not in supported]
+        if unsupported:
+            statement = premises[unsupported[0] - 1]["statement"]
+            return (
+                verdict,
+                completions,
+                (f"premise not established: {statement!r} is not supported by any passage"),
+            )
+        return verdict, completions, None
+
+    return verify
 
 
 def topup_pool(
@@ -603,18 +804,25 @@ def topup(
     llm: LLM,
     existing: list[dict],
     existing_questions: list[str],
-    groups: tuple[TopupGroup, ...] = TOPUP_GROUPS,
+    batch: str = "topup1",
+    groups: tuple[TopupGroup, ...] | None = None,
     log=print,
 ) -> GenerationResult:
     """Targeted additions: never reuse a page any earlier candidate used, stop each group once
     its target is accepted, and check duplicates against every existing question."""
+    default_groups, seed = TOPUPS[batch]
+    groups = groups or default_groups
     docs = {d.id: d for d in manifest.documents}
     mapper = EvidenceMapper(chunks)
     scan = KeywordScan([c for c in chunks if c["kind"] != "quiz"])
+    verifiers = {
+        "v1": v1_verifier(retriever, scan, llm),
+        "v2": v2_verifier(retriever, scan, llm, chunks),
+    }
     covered = page_coverage(chunks)
     used = {(s["doc_id"], s["page"]) for c in existing for s in c["source_pages"]}
     accepted = list(existing_questions)
-    rng = random.Random(SEED + 1)
+    rng = random.Random(seed)
     result = GenerationResult()
     for group in groups:
         got = calls = 0
@@ -622,24 +830,27 @@ def topup(
             if got >= group.target or calls >= group.max_calls:
                 break
             superseded = group.type == "superseded"
+            prompt_id = group.prompt_id or (
+                f"golden_gen_v1+superseded_v2:{SUPERSEDED_V2_HASH}" if superseded else ""
+            )
             task = Task(
                 group.type,
                 group.topic,
                 [page],
                 min(group.per_call, group.target - got),
                 instruction=SUPERSEDED_V2 if superseded else "",
-                prompt_id=f"golden_gen_v1+superseded_v2:{SUPERSEDED_V2_HASH}" if superseded else "",
+                prompt_id=prompt_id,
+                template=group.template,
             )
             got += _run_task(
                 task,
                 docs,
                 mapper,
-                scan,
-                retriever,
                 llm,
                 accepted,
                 result,
-                extra_fields={"batch": TOPUP_BATCH, "topup_group": group.label},
+                verifiers[group.verifier],
+                extra_fields={"batch": batch, "topup_group": group.label},
             )
             calls += 1
             used.add((page.doc_id, page.page))

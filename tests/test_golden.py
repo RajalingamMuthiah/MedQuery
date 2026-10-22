@@ -392,7 +392,7 @@ def test_topup_skips_used_pages_meets_targets_and_versions_superseded_prompt(tmp
     )
     llm = RecordingLLM({"answer_found": False, "partial": False})
     result = topup(
-        manifest, pages, chunks, retriever, llm, existing, [], groups, log=lambda *_: None
+        manifest, pages, chunks, retriever, llm, existing, [], groups=groups, log=lambda *_: None
     )
 
     used_before = {("tb", n) for n in range(3, 9)}
@@ -415,7 +415,15 @@ def test_topup_checks_duplicates_against_existing_questions(tmp_path):
     groups = (TopupGroup("tb-unanswerable", "unanswerable", "tuberculosis", ("tb",), 1, 2, 1),)
     llm = ScriptedLLM({"answer_found": False, "partial": False})
     result = topup(
-        manifest, pages, chunks, retriever, llm, [], [UNANSWERABLE_Q], groups, log=lambda *_: None
+        manifest,
+        pages,
+        chunks,
+        retriever,
+        llm,
+        [],
+        [UNANSWERABLE_Q],
+        groups=groups,
+        log=lambda *_: None,
     )
     assert {c["reject_reason"] for c in result.candidates} == {
         "near-duplicate of an accepted question"
