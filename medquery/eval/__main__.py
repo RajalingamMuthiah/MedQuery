@@ -6,11 +6,17 @@ import sys
 from collections import Counter
 
 from medquery import config, paths
-from medquery.eval.golden import GOLDEN_DIR, read_review_csv, write_review_csv
+from medquery.eval.evidence import EvidenceMapper
+from medquery.eval.freeze import FreezeError, freeze, sha256_file, write_frozen
+from medquery.eval.golden import (
+    GOLDEN_DIR,
+    append_review_csv,
+    read_review_csv,
+    write_review_csv,
+)
 from medquery.eval.golden_gen import (
     GEN_HASH,
-    SUPERSEDED_V2_HASH,
-    TOPUP_BATCH,
+    TOPUPS,
     VERIFY_HASH,
     generate,
     load_pages,
@@ -116,7 +122,7 @@ def append_review(existing_rows: list[dict], new_rows: list[dict]) -> list[dict]
     return existing_rows + new_rows
 
 
-def cmd_golden_topup() -> int:
+def cmd_golden_topup(batch: str) -> int:
     manifest = load_manifest(paths.MANIFEST)
     docs = {d.id: d for d in manifest.documents}
     candidates_path = GOLDEN_DIR / f"candidates_{VERSION}.jsonl"
@@ -124,8 +130,8 @@ def cmd_golden_topup() -> int:
     existing = [
         json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines()
     ]
-    if any(c.get("batch") == TOPUP_BATCH for c in existing):
-        print(f"{TOPUP_BATCH} is already in {candidates_path.name}; refusing to run it twice")
+    if any(c.get("batch") == batch for c in existing):
+        print(f"{batch} is already in {candidates_path.name}; refusing to run it twice")
         return 1
     rows = read_review_csv(review_path)
     try:
@@ -139,6 +145,7 @@ def cmd_golden_topup() -> int:
                 get_client(),
                 existing,
                 [r["question"] for r in rows],
+                batch=batch,
             )
     except QuotaExhausted as exc:
         print(
@@ -150,11 +157,12 @@ def cmd_golden_topup() -> int:
         return 1
 
     new_items = to_items(result.candidates, start=next_id_number(rows), sort=False)
-    all_rows = append_review(rows, review_rows(new_items, docs))
+    new_rows = review_rows(new_items, docs)
+    all_rows = append_review(rows, new_rows)  # id-collision check
     with atomic_write(candidates_path) as f:
         for candidate in existing + result.candidates:
             f.write(json.dumps(candidate, ensure_ascii=False) + "\n")
-    write_review_csv(review_path, all_rows)
+    append_review_csv(review_path, new_rows)  # existing rows' bytes are never rewritten
 
     status = Counter(c["status"] for c in result.candidates)
     print(f"\ntop-up candidates: {len(result.candidates)} ({dict(status)})")
@@ -175,7 +183,58 @@ def cmd_golden_topup() -> int:
     )
     print(f"tokens and list cost (prices {config.PRICES_DATE}):")
     print("\n".join(format_summary(summarize(result.completions))))
-    print(f"prompt: golden_gen_v1+superseded_v2:{SUPERSEDED_V2_HASH} (superseded top-up only)")
+    prompts = sorted({c["gen_prompt"] for c in result.candidates})
+    print(f"author prompts: {', '.join(prompts)}")
+    checks = sorted(
+        {
+            c["verification"].get("version", f"unanswerable_check_v1:{VERIFY_HASH}")
+            for c in result.candidates
+            if "verification" in c
+        }
+    )
+    if checks:
+        print(f"unanswerability checks: {', '.join(checks)}")
+    return 0
+
+
+def cmd_golden_freeze(version: str, reviewer: str, exclude: set[str], check_only: bool) -> int:
+    review_path = GOLDEN_DIR / f"review_{version}.csv"
+    candidates_path = GOLDEN_DIR / f"candidates_{version}.jsonl"
+    candidates = [
+        json.loads(line) for line in candidates_path.read_text(encoding="utf-8").splitlines()
+    ]
+    pages = {(p.doc_id, p.page): p.text for p in load_pages()}
+    mapper = EvidenceMapper(load_chunks(include_quiz=True))
+    try:
+        frozen = freeze(review_path, version, pages, mapper, reviewer, exclude, candidates)
+        paths_written = () if check_only else write_frozen(frozen)
+    except FreezeError as exc:
+        print(f"freeze refused: {exc}")
+        return 1
+    meta = frozen.meta
+    review = meta["review"]
+    print(
+        f"review: {review['rows']} rows; reviewed {review['reviewed']} "
+        f"({review['reviewed_share']:.0%}); "
+        f"keep {review['keep']}, fix {review['fix']}, drop {review['drop']}; "
+        f"excluded {review['excluded'] or 'none'}"
+    )
+    print(f"reviewer: {meta['reviewer']}")
+    print(
+        f"frozen items: {meta['items']} (unanswerable {meta['unanswerable']}, "
+        f"{meta['unanswerable_share']:.0%}); splits {meta['by_split']}"
+    )
+    table = Counter((i["topic"], i["type"], i["split"]) for i in frozen.items)
+    print(f"\n{'topic':<13} {'type':<13} {'dev':>4} {'test':>5} {'total':>6}")
+    for topic, kind in sorted({(t, k) for t, k, _ in table}):
+        dev, test = table[(topic, kind, "dev")], table[(topic, kind, "test")]
+        print(f"{topic:<13} {kind:<13} {dev:>4} {test:>5} {dev + test:>6}")
+    if check_only:
+        print("\n--check: validation passed; nothing written")
+    else:
+        for path in paths_written:
+            print(f"wrote {path.relative_to(paths.ROOT)}")
+        print(f"sha256: {sha256_file(paths_written[0])}")
     return 0
 
 
@@ -187,12 +246,21 @@ def main(argv: list[str] | None = None) -> int:
     gen = golden.add_parser("generate", help="write golden candidates and the review CSV")
     gen.add_argument("--dry-run", action="store_true", help="show sampled pages; no LLM calls")
     gen.add_argument("--force", action="store_true", help="overwrite a review CSV with edits")
-    golden.add_parser("topup", help="append top-up 1 candidates to the review CSV")
+    top = golden.add_parser("topup", help="append a top-up batch to the review CSV")
+    top.add_argument("--batch", choices=sorted(TOPUPS), required=True)
+    frz = golden.add_parser("freeze", help="validate the review CSV and freeze golden_<version>")
+    frz.add_argument("--version", required=True)
+    frz.add_argument("--reviewer", required=True, help="who reviewed the set, recorded in meta")
+    frz.add_argument("--exclude", default="", help="comma-separated ids left out of the set")
+    frz.add_argument("--check", action="store_true", help="validate and report only")
     args = parser.parse_args(argv)
+    if args.group == "golden" and args.action == "freeze":
+        excluded = {x.strip() for x in args.exclude.split(",") if x.strip()}
+        return cmd_golden_freeze(args.version, args.reviewer, excluded, args.check)
     if args.group == "golden" and args.action == "generate":
         return cmd_golden_generate(args.dry_run, args.force)
     if args.group == "golden" and args.action == "topup":
-        return cmd_golden_topup()
+        return cmd_golden_topup(args.batch)
     return 1
 
 

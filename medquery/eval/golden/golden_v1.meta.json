@@ -1,0 +1,55 @@
+{
+  "version": "v1",
+  "created": "2026-10-22",
+  "reviewer": "Claude (Anthropic) pre-review against source PDFs",
+  "review_file": "review_v1.csv",
+  "review_file_sha256": "f4f5c07e72a56aacc17a5601b48d95af05767871ddcc80fed8f09c57656e6610",
+  "review": {
+    "rows": 98,
+    "reviewed": 96,
+    "reviewed_share": 0.98,
+    "keep": 67,
+    "fix": 2,
+    "drop": 29,
+    "excluded": [
+      "g097",
+      "g098"
+    ]
+  },
+  "items": 67,
+  "unanswerable": 15,
+  "unanswerable_share": 0.224,
+  "by_topic_type": {
+    "diabetes/factual": 7,
+    "diabetes/multi-chunk": 3,
+    "diabetes/table": 6,
+    "diabetes/unanswerable": 7,
+    "hypertension/factual": 9,
+    "hypertension/multi-chunk": 2,
+    "hypertension/superseded": 3,
+    "hypertension/table": 2,
+    "hypertension/unanswerable": 6,
+    "tuberculosis/factual": 12,
+    "tuberculosis/multi-chunk": 3,
+    "tuberculosis/table": 5,
+    "tuberculosis/unanswerable": 2
+  },
+  "by_split": {
+    "dev": 44,
+    "test": 23
+  },
+  "split": {
+    "test_share": 0.3,
+    "seed": 20261022,
+    "stratified_by": "topic,type"
+  },
+  "candidate_authors": [
+    "qwen/qwen3.8-27b"
+  ],
+  "candidate_author_prompts": [
+    "golden_gen_v1+superseded_v2:15ccfad80cec",
+    "golden_gen_v1+unanswerable_v2:7181529e980f",
+    "golden_gen_v1:fffb1a6a04ee"
+  ],
+  "sha256": "ed7ec824b334d36d6be81ab90dc830db78842b414163071a898bc83a39566fb9"
+}

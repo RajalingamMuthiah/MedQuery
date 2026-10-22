@@ -78,5 +78,25 @@ def test_coverage_counts_each_status():
     assert coverage(mapped) == {"exact": 1, "fuzzy": 0, "missing": 1}
 
 
+def test_space_between_number_and_unit_is_ignored():
+    """JNC 7 p.23's text layer has '<130/80mmHg' (the PDF dropped the space)."""
+    assert normalise("the BP goal is <130/80 mmHg") == normalise("the BP goal is <130/80mmHg")
+    assert normalise("10 mg/kg daily") == normalise("10mg/kg daily")
+    # The rule is symmetric (quotes and chunks), so joining "1 hypertension" is harmless:
+    m = EvidenceMapper(
+        [
+            {
+                "id": "h:1",
+                "doc_id": "h",
+                "page_start": 1,
+                "page_end": 1,
+                "text": "Stage 1 hypertension is 140-159 mmHg.",
+            }
+        ]
+    )
+    assert m.map(Evidence("h", 1, "Stage 1 hypertension is 140-159mmHg")).status == "exact"
+    assert m.map(Evidence("h", 1, "Stage 2 hypertension is 140-159 mmHg")).status == "missing"
+
+
 def test_normalise_handles_ligatures_quotes_and_dashes():
-    assert normalise("ﬁrst “quoted” 10–14 kg") == 'first "quoted" 10-14 kg'
+    assert normalise("ﬁrst “quoted” 10–14 kg") == 'first "quoted" 10-14kg'

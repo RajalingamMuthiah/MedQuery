@@ -23,6 +23,7 @@ def normalise(text: str) -> str:
     text = re.sub(r"\|?-{3,}\|?", " ", text)  # Markdown table rules
     text = text.replace("|", " ")
     text = re.sub(r"(\w)-\s+(\w)", r"\1\2", text)  # words hyphenated across a line break
+    text = re.sub(r"(\d)\s+(?=[a-zµ%])", r"\1", text)  # "130/80 mmhg" == "130/80mmhg" (PDF kerning)
     return re.sub(r"\s+", " ", text).strip()
 
 
