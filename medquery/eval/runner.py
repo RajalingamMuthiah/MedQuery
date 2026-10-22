@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from medquery import config as settings
@@ -16,6 +16,9 @@ from medquery.generation.answer import answer_from_hits
 from medquery.generation.prompts import ANSWER_HASH, ANSWER_VERSION
 from medquery.llm.base import LLM, Completion
 from medquery.retrieval.dense import Retriever
+from medquery.retrieval.fusion import RRF_K
+from medquery.retrieval.pipeline import HybridRetriever
+from medquery.retrieval.rerank import FastEmbedReranker
 
 RUNS_DIR = paths.ROOT / "data" / "eval_runs"
 
@@ -32,15 +35,64 @@ class RunConfig:
     include_quiz: bool = False
     answer_prompt: str = f"{ANSWER_VERSION}:{ANSWER_HASH}"
     judge_prompt: str = prompt_id(JUDGE_VERSION)
+    # Phase 3 retrieval settings. At their defaults they are left out of the run id, so the
+    # Phase 2 baseline keeps its id and records.
+    retriever: str = "dense"  # "dense" or "hybrid" (dense + BM25 with RRF)
+    fuse_k: int = RRF_K
+    rerank_model: str = ""
+    rerank_n: int = 20
+    headers: bool = False
 
 
-CONFIGS = {"baseline": RunConfig()}
+RETRIEVAL_DEFAULTS = {
+    "retriever": "dense",
+    "fuse_k": RRF_K,
+    "rerank_model": "",
+    "rerank_n": 20,
+    "headers": False,
+}
+_HYBRID = RunConfig(name="hybrid", retriever="hybrid")
+_RERANK = replace(_HYBRID, name="hybrid_rerank", rerank_model="BAAI/bge-reranker-base")
+_HEADERS = replace(_RERANK, name="hybrid_rerank_headers", headers=True)
+CONFIGS = {
+    "baseline": RunConfig(),
+    "hybrid": _HYBRID,
+    "hybrid_rerank": _RERANK,
+    "hybrid_rerank_headers": _HEADERS,
+    # k = 8 variants: only the best earlier row is run (decided on dev).
+    "hybrid_k8": replace(_HYBRID, name="hybrid_k8", k=8),
+    "hybrid_rerank_k8": replace(_RERANK, name="hybrid_rerank_k8", k=8),
+    "hybrid_rerank_headers_k8": replace(_HEADERS, name="hybrid_rerank_headers_k8", k=8),
+}
 
 
 def run_id(config: RunConfig, split: str, golden_sha: str, chunks_sha: str) -> str:
     """Same config, split, golden set and corpus => same id => the run resumes."""
-    payload = {**asdict(config), "split": split, "golden": golden_sha, "chunks": chunks_sha}
+    fields = {
+        key: value
+        for key, value in asdict(config).items()
+        if key not in RETRIEVAL_DEFAULTS or value != RETRIEVAL_DEFAULTS[key]
+    }
+    payload = {**fields, "split": split, "golden": golden_sha, "chunks": chunks_sha}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def build_retriever(config: RunConfig, chunks: list[dict], embedder, reranker=None):
+    """The retriever a config describes. The plain dense config uses the Phase 2 Retriever
+    unchanged; anything else uses the hybrid pipeline."""
+    if (config.retriever, config.rerank_model, config.headers) == ("dense", "", False):
+        return Retriever(embedder, chunks)
+    if config.rerank_model and reranker is None:
+        reranker = FastEmbedReranker(config.rerank_model)
+    return HybridRetriever(
+        embedder,
+        chunks,
+        use_bm25=config.retriever == "hybrid",
+        headers=config.headers,
+        reranker=reranker if config.rerank_model else None,
+        rerank_n=config.rerank_n,
+        fuse_k=config.fuse_k,
+    )
 
 
 def _usage(completions: list[Completion]) -> dict:
@@ -86,7 +138,10 @@ def evaluate_item(
 
     gen_usage = _usage([result.completion])
     judge_usage = _usage(judge_completions)
-    return {
+    extra = {}
+    if getattr(retriever, "last_stats", None):  # e.g. reranker inputs over the max length
+        extra["retrieval_stats"] = dict(retriever.last_stats)
+    return extra | {
         "id": item["id"],
         "split": item["split"],
         "topic": item["topic"],
