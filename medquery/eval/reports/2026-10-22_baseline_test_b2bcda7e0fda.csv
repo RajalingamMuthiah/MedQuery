@@ -1,0 +1,18 @@
+metric,value,ci_low,ci_high,over,definition
+answer_correctness,0.6111111111111112,0.3684210526315789,0.8125,answerable,"judge vs reference: correct 1, partial 0.5, incorrect 0; abstained = 0"
+faithfulness,0.9090909090909091,0.7,1.0,answered,"per answer, claims supported by retrieved passages / claims; mean"
+hallucination_rate,0.03333333333333333,0.0,0.13652597402597386,answered,"unsupported claims / all claims, pooled"
+answer_relevancy,1.0,1.0,1.0,answered,judge rating 1-5 scaled to 0-1
+context_precision,0.3351851851851852,0.1729139254385965,0.5159136904761904,answerable,rank-aware AP@k over the generator's passages; relevant = maps to a gold quote
+context_recall,0.6111111111111112,0.40609375000000014,0.8237745098039213,answerable,gold evidence items covered by the generator's passages
+recall@1,0.2222222222222222,0.05263157894736842,0.4375,answerable,gold chunks in the top 1 / gold
+recall@3,0.3333333333333333,0.1331250000000002,0.5714285714285714,answerable,gold chunks in the top 3 / gold
+recall@5,0.6111111111111112,0.40609375000000014,0.8237745098039213,answerable,gold chunks in the top 5 / gold
+recall@10,0.75,0.5555555555555556,0.9166666666666666,answerable,gold chunks in the top 10 / gold
+mrr,0.3732142857142857,0.22637531328320804,0.5468373015873015,answerable,1 / rank of the first gold chunk in the top 10
+citation_accuracy,0.9666666666666667,0.8634740259740261,1.0,answered,"cited claims whose cited passages support them / cited claims, pooled"
+citation_validity,1.0,1.0,1.0,answered,citations naming a passage given to the generator / citations
+uncited_claim_share,0.0,0.0,0.0,answered,claims with no citation
+abstention_accuracy,0.6956521739130435,0.5206521739130444,0.8695652173913043,all,"abstain on unanswerable, answer on answerable"
+abstention_recall,1.0,1.0,1.0,unanswerable,unanswerable questions where the system abstained
+false_abstention_rate,0.3888888888888889,0.1875,0.631578947368421,answerable,answerable questions where the system abstained
