@@ -20,6 +20,19 @@
 - Table questions really need the table; multi-chunk questions really need both pages.
 - Superseded questions (JNC 7) have a reference answer that notes the 2003 guidance and that it has been superseded.
 
+## Judge review: how to label `judge_review_v1.csv`
+
+This file checks the LLM judge against your judgement. It holds a stratified sample from the dev baseline run: at least 40 claims and at least 20 answers. **The judge's verdicts are hidden** in `judge_review_v1.key.json` so they don't anchor you; don't open that file until you've finished.
+
+Fill in `human_label` on every row, and use `notes` for anything useful:
+
+| `unit` | Allowed `human_label` | How to decide |
+|---|---|---|
+| `claim` | `supported` or `unsupported` | Is the `claim` fully supported by at least one of the `passages`? Judge **only from the passages**: not from your own knowledge, the reference answer, or what you think is true. |
+| `answer` | `correct`, `partial` or `incorrect` | Compare the `answer` with the `reference_answer`. **correct:** the same key facts, with no contradiction. **partial:** some of the key facts, or a minor error. **incorrect:** misses the key facts or contradicts the reference. |
+
+Then run `uv run python -m medquery.eval judge-review freeze`. It computes % agreement and Cohen's kappa, and every report shows the result.
+
 ## Files
 - `candidates_v1.jsonl`: every candidate, including rejected ones with `reject_reason`, rewrites with `original_question`, and the unanswerability check's verdict.
 - `review_v1.csv`: accepted candidates, for your review.

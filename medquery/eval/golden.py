@@ -168,7 +168,7 @@ def write_review_csv(path: Path, rows: list[dict]) -> None:
     writer.writeheader()
     writer.writerows(rows)
     with atomic_write(path) as f:
-        f.write("﻿" + buffer.getvalue())
+        f.write("\ufeff" + buffer.getvalue())
 
 
 def append_review_csv(path: Path, rows: list[dict]) -> None:

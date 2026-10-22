@@ -2,12 +2,14 @@
 
 import argparse
 import json
+import math
 import sys
 from collections import Counter
 
 from medquery import config, paths
 from medquery.eval.evidence import EvidenceMapper
-from medquery.eval.freeze import FreezeError, freeze, sha256_file, write_frozen
+from medquery.eval.freeze import FreezeError, freeze, load_golden, sha256_file, write_frozen
+from medquery.eval.gitinfo import git_state
 from medquery.eval.golden import (
     GOLDEN_DIR,
     append_review_csv,
@@ -25,11 +27,23 @@ from medquery.eval.golden_gen import (
     to_items,
     topup,
 )
+from medquery.eval.judge_review import (
+    N_CLAIMS,
+    load_agreement,
+    probe_units,
+    review_paths,
+    sample,
+    write_review,
+)
+from medquery.eval.judge_review import SEED as SAMPLE_SEED
+from medquery.eval.judge_review import review_rows as judge_review_rows
+from medquery.eval.report import write_report
+from medquery.eval.runner import CONFIGS, RUNS_DIR, load_records, run, run_id
 from medquery.eval.usage import format_summary, summarize
 from medquery.fileio import LockHeld, atomic_write, exclusive_lock
 from medquery.ingest.manifest import load_manifest
 from medquery.llm import LLMError, QuotaExhausted, get_client
-from medquery.retrieval.dense import Retriever, load_chunks
+from medquery.retrieval.dense import CHUNKS, Retriever, load_chunks
 from medquery.retrieval.embed import FastEmbedder
 
 VERSION = "v1"
@@ -238,6 +252,99 @@ def cmd_golden_freeze(version: str, reviewer: str, exclude: set[str], check_only
     return 0
 
 
+def cmd_run(split: str, config_name: str) -> int:
+    config = CONFIGS[config_name]
+    try:
+        items, golden_meta = load_golden(config.golden_version)
+    except (FreezeError, FileNotFoundError) as exc:
+        print(f"error: cannot load golden_{config.golden_version}: {exc}", file=sys.stderr)
+        return 1
+    git = git_state()
+    if split == "test" and git["dirty"] is not False:
+        print("refused: test-split runs are milestones and need a clean, committed git tree")
+        return 1
+    chunks_sha = sha256_file(CHUNKS)
+    rid = run_id(config, split, golden_meta["sha256"], chunks_sha)
+    run_dir = RUNS_DIR / rid
+    print(f"run {rid}: config {config.name}, split {split}, golden {golden_meta['version']}")
+    try:
+        retriever = Retriever(
+            FastEmbedder(config.embed_model), load_chunks(include_quiz=config.include_quiz)
+        )
+        records = run(
+            config,
+            split,
+            items,
+            retriever,
+            get_client(),
+            EvidenceMapper(load_chunks(include_quiz=True)),
+            run_dir,
+        )
+    except QuotaExhausted as exc:
+        print(f"stopped: {exc}\nRe-run the same command later to resume (finished items are kept).")
+        return 2
+    except (LLMError, LockHeld) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    agreement = load_agreement(config.judge_prompt, config.judge)
+    written = write_report(records, config, split, rid, golden_meta, chunks_sha, git, agreement)
+    for path in written:
+        print(f"wrote {path.relative_to(paths.ROOT)}")
+    return 0
+
+
+def cmd_judge_sample(run: str) -> int:
+    records = load_records(RUNS_DIR / run / "items.jsonl")
+    if not records:
+        print(f"no records for run {run}")
+        return 1
+    review = review_paths()
+    if review["csv"].exists() or review["labels"].exists():
+        print(f"{review['csv'].name} already exists; refusing to overwrite a labelling file")
+        return 1
+    chunks = {c["id"]: c for c in load_chunks(include_quiz=True)}
+    natural_unsupported = sum(
+        not c["supported_by_context"] for r in records if r["judge"] for c in r["judge"]["claims"]
+    )
+    need = max(0, math.ceil(N_CLAIMS / 3) - natural_unsupported)
+    try:
+        probes, probe_calls = probe_units(records, get_client(), chunks, need)
+    except QuotaExhausted as exc:
+        print(f"stopped: {exc}\nRe-run later; finished probe calls are cached.")
+        return 2
+    units = sample(records, probes=probes)
+    rows, key = judge_review_rows(units, {cid: c["text"] for cid, c in chunks.items()})
+    run_config = json.loads((RUNS_DIR / run / "run.json").read_text(encoding="utf-8"))
+    meta = {
+        "run_id": run,
+        "split": run_config["split"],
+        "judge_model": run_config["config"]["judge"],
+        "judge_prompt": run_config["config"]["judge_prompt"],
+        "seed": SAMPLE_SEED,
+        "probes": {
+            "method": "mismatched context: a dev answer re-judged against the passages "
+            "retrieved for a dev question from a different topic",
+            "probe_answers": len({p["record"]["id"] for p in probes}),
+            "probe_claims": len(probes),
+            "probe_claims_in_sample": sum(1 for k in key.values() if k["probe"]),
+            "judge_calls": len(probe_calls),
+        },
+    }
+    write_review(rows, key, meta, review)
+    by_unit = Counter(
+        (k["unit"], k["judge_label"], "probe" if k["probe"] else "natural") for k in key.values()
+    )
+    print(
+        f"wrote {review['csv'].relative_to(paths.ROOT)} ({len(rows)} rows; judge verdicts hidden "
+        f"in {review['key'].name})"
+    )
+    for (unit, label, source), n in sorted(by_unit.items()):
+        print(f"  {unit:<7} judge said {label:<12} {source:<8} {n}")
+    print(f"probes: {meta['probes']}")
+    print("\n".join(format_summary(summarize(probe_calls))))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(line_buffering=True)  # show progress live when output is redirected
     parser = argparse.ArgumentParser(prog="python -m medquery.eval")
@@ -253,7 +360,16 @@ def main(argv: list[str] | None = None) -> int:
     frz.add_argument("--reviewer", required=True, help="who reviewed the set, recorded in meta")
     frz.add_argument("--exclude", default="", help="comma-separated ids left out of the set")
     frz.add_argument("--check", action="store_true", help="validate and report only")
+    run_parser = sub.add_parser("run", help="evaluate a config on a golden split (resumable)")
+    run_parser.add_argument("--split", choices=["dev", "test"], required=True)
+    run_parser.add_argument("--config", choices=sorted(CONFIGS), default="baseline")
+    sample_parser = sub.add_parser("judge-sample", help="write the judge-review CSV from a run")
+    sample_parser.add_argument("--run", required=True, help="run id (data/eval_runs/<id>)")
     args = parser.parse_args(argv)
+    if args.group == "run":
+        return cmd_run(args.split, args.config)
+    if args.group == "judge-sample":
+        return cmd_judge_sample(args.run)
     if args.group == "golden" and args.action == "freeze":
         excluded = {x.strip() for x in args.exclude.split(",") if x.strip()}
         return cmd_golden_freeze(args.version, args.reviewer, excluded, args.check)
