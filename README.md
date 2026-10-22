@@ -36,4 +36,5 @@ Status: work in progress. Results will be added here only once a re-runnable scr
 - **Floating tables take the section where they appear in reading order.** That can be the subsection just before them rather than the one that discusses them (MMWR Table 4 is one example).
 - **Quiz content is kept but labelled.** The Core Curriculum's "Knowledge Check" items are unanswered questions, and some state false claims on purpose. They are stored as `kind = "quiz"` and excluded from retrieval by default.
 - **OCR errors remain in scanned text.** Examples are dropped decimal points and misread years. Each chunk carries its OCR confidence.
+- **The golden set was reviewed by an AI, not by a person.** golden_v1 (67 questions) was written by `qwen/qwen3.8-27b`, then pre-reviewed by Claude (Anthropic) against the source PDFs. No human hand-check is recorded. Some strata are thin: only 2 tuberculosis unanswerable questions and 3 superseded ones. Treat per-stratum results as indicative.
 - **Small, US-focused corpus.** It has three topics and ten documents, mostly from US federal agencies.

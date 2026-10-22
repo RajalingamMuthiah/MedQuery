@@ -52,7 +52,8 @@ uv run python -m medquery.ingest sources   # regenerate docs/SOURCES.md (a test 
 uv run python -m medquery.ask "question"               # baseline answer with citations
 uv run python -m medquery.eval golden generate --dry-run  # show sampled source pages, no LLM calls
 uv run python -m medquery.eval golden generate          # candidates + review CSV (resumable)
-uv run python -m medquery.eval golden topup             # top-up 1 (already run; refuses to rerun)
+uv run python -m medquery.eval golden topup --batch topup2  # top-ups append to review CSV (each runs once)
+uv run python -m medquery.eval golden freeze --version v1 --reviewer "..." [--exclude ids] [--check]
 ```
 Tesseract with English data is required (`tesseract --list-langs` shows `eng`). CI installs Ubuntu's `tesseract-ocr`.
 Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), and add it in the phase that first needs it.
@@ -61,7 +62,8 @@ Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), an
 **Phase 0 (setup): done and approved.** CI is green on GitHub (origin: https://github.com/RajalingamMuthiah/MedQuery).
 **Phase 1 (corpus and ingestion): done and approved.** CI is green (Tesseract OCR tests run on Ubuntu). It ingests 10 approved public-domain PDFs. Ruled tables (grid, open-sided and booktabs) become Markdown table chunks. Scanned pages are OCR'd. Chunks are section-aware, and short chunks merge within their section. Per-document stats, including mean OCR confidence, are in `data/processed/build_summary.json`.
 Short chunks (under 30 words) are below the user's 8% threshold. The current rate is printed by `build` and stored in `build_summary.json`. Chunking will be judged by retrieval metrics in Phase 2.
-**Phase 2 (baseline RAG and evaluation harness): Part A done, at STOP 1.** The LLM layer, dense baseline RAG, `ask`, evidence mapping and golden generator are built. `medquery/eval/golden/review_v1.csv` has 96 candidates and awaits the user's hand review; see `medquery/eval/golden/README.md`. g001–g086 come from the first run. g087–g096 are top-up 1, added at the user's request: 5 tuberculosis unanswerable, 3 substantive superseded questions (prompt `golden_gen_v1+superseded_v2`), and 2 from the 1964 scan.
+**Phase 2: golden_v1 frozen (2026-10-22).** `medquery/eval/golden/golden_v1.jsonl` has 67 items, 15 unanswerable (22%), split 44 dev / 23 test, sha256 `ed7ec824…` (see the meta file). g097 and g098 (topup2, unreviewed) were excluded at freeze, at the user's choice. Next: the rest of Part B1 up to STOP 2.
+**Phase 2 (baseline RAG and evaluation harness): Part A done (STOP 1 passed).** The LLM layer, dense baseline RAG, `ask`, evidence mapping and golden generator are built. `medquery/eval/golden/review_v1.csv` has 96 candidates and awaits the user's hand review; see `medquery/eval/golden/README.md`. g001–g086 come from the first run. g087–g096 are top-up 1, added at the user's request: 5 tuberculosis unanswerable, 3 substantive superseded questions (prompt `golden_gen_v1+superseded_v2`), and 2 from the 1964 scan.
 Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_v1.csv`) after the review. Then STOP 2.
 
 ### Carry-forward rules for Phase 2 onwards
@@ -91,5 +93,14 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
 - Phase 2: **the provider changed from Anthropic Claude to Groq**, at the user's request (the brief specifies Anthropic). The key is `GROQ_API_KEY`, accessed through the OpenAI-compatible endpoint behind `medquery/llm/`, so other providers can be added later.
 - Phase 2: the unanswerability check shows the judge 6 dense + 6 keyword passages, not the planned 10 + 10, because 20 passages exceed the 8K tokens/min limit in a single request.
 - Phase 2 (user-approved): a candidate question that copies 6 or more consecutive words from its page gets one rewrite by the author model. Then it is re-validated, or rejected. The original wording is kept as `original_question`.
+- Phase 2 (user request): top-up 2 adds strict tuberculosis unanswerables. It uses author template `unanswerable_v2` (no false premises) and check `unanswerable_check_v2`:
+  1. The judge lists the question's presuppositions, and each key term must occur in the non-quiz corpus.
+  2. The answer search covers the top 15 dense plus top 15 keyword passages.
+  3. A question is accepted only if no passage answers it and every presupposition is supported.
+  The 30 passages go to the judge in batches of about 4.5K tokens, because one request must stay under 8K tokens/min.
+- Phase 2 (**deviation from the brief**): the golden set was reviewed by an AI pre-review, not checked by hand by the user. The brief requires the user to check at least 25% by hand. `golden_v1.meta.json` records `"reviewer": "Claude (Anthropic) pre-review against source PDFs"`, as the user instructed. Reports and the README must say so; never describe golden_v1 as human-reviewed.
+- Phase 2: topup2's false-premise key-term check proved too literal. The judge returns paraphrased terms ("daily dosage", "5% to 10%") that aren't verbatim in the corpus, so most of its 12 "false premise" rejections give the wrong reason. Only 2 of 6 were accepted, and both were excluded at freeze. Don't reuse `unanswerable_check_v2` without fixing the term matching.
+- Phase 2: evidence normalisation ignores whitespace between a digit and the letter that follows ("130/80 mmHg" matches "130/80mmHg"), because PDF text layers drop such spaces. It's applied to both quotes and chunks.
+- Phase 2: top-ups append to `review_v1.csv` byte for byte (`append_review_csv`), so the user's edited rows are never rewritten.
 - Phase 2: the retry, throttle and cache logic lives in `medquery/llm/client.py`, separate from the protocol in `base.py`, so it can be tested with a fake transport.
 - Phase 1 (local environment only): Tesseract's English model was missing, so `eng.traineddata` from tessdata_fast 4.1.0 was added to `%LOCALAPPDATA%\Tesseract-OCR\tessdata`.
