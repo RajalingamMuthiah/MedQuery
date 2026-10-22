@@ -54,6 +54,8 @@ uv run python -m medquery.eval golden generate --dry-run  # show sampled source 
 uv run python -m medquery.eval golden generate          # candidates + review CSV (resumable)
 uv run python -m medquery.eval golden topup --batch topup2  # top-ups append to review CSV (each runs once)
 uv run python -m medquery.eval golden freeze --version v1 --reviewer "..." [--exclude ids] [--check]
+uv run python -m medquery.eval run --split dev --config baseline   # resumable; writes medquery/eval/reports/
+uv run python -m medquery.eval judge-sample --run <run_id>          # judge_review_v1.csv for hand labels
 ```
 Tesseract with English data is required (`tesseract --list-langs` shows `eng`). CI installs Ubuntu's `tesseract-ocr`.
 Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), and add it in the phase that first needs it.
@@ -62,7 +64,12 @@ Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), an
 **Phase 0 (setup): done and approved.** CI is green on GitHub (origin: https://github.com/RajalingamMuthiah/MedQuery).
 **Phase 1 (corpus and ingestion): done and approved.** CI is green (Tesseract OCR tests run on Ubuntu). It ingests 10 approved public-domain PDFs. Ruled tables (grid, open-sided and booktabs) become Markdown table chunks. Scanned pages are OCR'd. Chunks are section-aware, and short chunks merge within their section. Per-document stats, including mean OCR confidence, are in `data/processed/build_summary.json`.
 Short chunks (under 30 words) are below the user's 8% threshold. The current rate is printed by `build` and stored in `build_summary.json`. Chunking will be judged by retrieval metrics in Phase 2.
-**Phase 2: golden_v1 frozen (2026-10-22).** `medquery/eval/golden/golden_v1.jsonl` has 67 items, 15 unanswerable (22%), split 44 dev / 23 test, sha256 `ed7ec824…` (see the meta file). g097 and g098 (topup2, unreviewed) were excluded at freeze, at the user's choice. Next: the rest of Part B1 up to STOP 2.
+**Phase 2: Part B1 done, at STOP 2.** golden_v1 was frozen on 2026-10-22 (67 items: 15 unanswerable, 44 dev / 23 test, sha256 `ed7ec824…`). g097 and g098 (topup2, unreviewed) were excluded at freeze, at the user's choice. The dev baseline run is `eb2f931e39c1`; its provisional report `medquery/eval/reports/2026-10-22_baseline_dev.md` was made on a DIRTY tree and is flagged "judge NOT YET VALIDATED". `medquery/eval/golden/judge_review_v1.csv` (40 claims, 20 answers; verdicts hidden in the key file) awaits the user's labels.
+Next, Part B2:
+1. `judge-review freeze`, then agreement and kappa (judge_v2 only if claim kappa < 0.6).
+2. Re-run dev from a clean commit for the final report.
+3. One test-split run.
+4. README metric definitions.
 **Phase 2 (baseline RAG and evaluation harness): Part A done (STOP 1 passed).** The LLM layer, dense baseline RAG, `ask`, evidence mapping and golden generator are built. `medquery/eval/golden/review_v1.csv` has 96 candidates and awaits the user's hand review; see `medquery/eval/golden/README.md`. g001–g086 come from the first run. g087–g096 are top-up 1, added at the user's request: 5 tuberculosis unanswerable, 3 substantive superseded questions (prompt `golden_gen_v1+superseded_v2`), and 2 from the 1964 scan.
 Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_v1.csv`) after the review. Then STOP 2.
 
@@ -100,6 +107,9 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
   The 30 passages go to the judge in batches of about 4.5K tokens, because one request must stay under 8K tokens/min.
 - Phase 2 (**deviation from the brief**): the golden set was reviewed by an AI pre-review, not checked by hand by the user. The brief requires the user to check at least 25% by hand. `golden_v1.meta.json` records `"reviewer": "Claude (Anthropic) pre-review against source PDFs"`, as the user instructed. Reports and the README must say so; never describe golden_v1 as human-reviewed.
 - Phase 2: topup2's false-premise key-term check proved too literal. The judge returns paraphrased terms ("daily dosage", "5% to 10%") that aren't verbatim in the corpus, so most of its 12 "false premise" rejections give the wrong reason. Only 2 of 6 were accepted, and both were excluded at freeze. Don't reuse `unanswerable_check_v2` without fixing the term matching.
+- Phase 2 (user-approved): the judge-review sample adds **mismatched-context probes**. The dev run had only 39 claims, 1 of them unsupported, too few to validate hallucination detection.
+  - **How they're made:** 8 dev answers were re-judged against passages retrieved for a different-topic dev question, giving 13 unsupported probe claims that fill the unsupported third of the 40-claim sample. Supported claims are all natural.
+  - **How they're tracked:** probe rows are marked in `judge_review_v1.key.json`, and the agreement block reports `n_probe`.
 - Phase 2: evidence normalisation ignores whitespace between a digit and the letter that follows ("130/80 mmHg" matches "130/80mmHg"), because PDF text layers drop such spaces. It's applied to both quotes and chunks.
 - Phase 2: top-ups append to `review_v1.csv` byte for byte (`append_review_csv`), so the user's edited rows are never rewritten.
 - Phase 2: the retry, throttle and cache logic lives in `medquery/llm/client.py`, separate from the protocol in `base.py`, so it can be tested with a fake transport.
