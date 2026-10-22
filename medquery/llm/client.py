@@ -44,18 +44,16 @@ class LLMClient:
         messages: list[dict],
         *,
         model: str,
-        temperature: float = 0.0,
+        temperature: float | None = 0.0,
         max_tokens: int = 600,
         seed: int | None = 0,
         reasoning_effort: str | None = None,
         response_format: dict | None = None,
     ) -> Completion:
-        request = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_completion_tokens": max_tokens,
-        }
+        request = {"model": model, "messages": messages}
+        if temperature is not None:  # None: the model only accepts its default temperature
+            request["temperature"] = temperature
+        request["max_completion_tokens"] = max_tokens
         if seed is not None:
             request["seed"] = seed
         if reasoning_effort is not None:

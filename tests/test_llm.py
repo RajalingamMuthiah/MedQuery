@@ -201,3 +201,63 @@ def test_estimate_tokens_includes_output_budget():
 
 def test_cache_key_ignores_key_order():
     assert cache_key({"a": 1, "b": [1, 2]}) == cache_key({"b": [1, 2], "a": 1})
+
+
+# --- provider routing (Groq generator, OpenAI judge) ---
+
+
+def test_router_sends_each_model_to_its_provider_and_applies_overrides():
+    from medquery.llm import Router
+
+    groq, openai = FakeTransport(ok("from groq")), FakeTransport(ok("from openai"))
+    clients = {"groq": make_client(groq)[0], "openai": make_client(openai)[0]}
+    providers = {"gen": "groq", "judge": "openai"}
+    router = Router(
+        clients, provider_of=providers.__getitem__, overrides={"judge": {"temperature": None}}
+    )
+    assert router.complete(MESSAGES, model="gen").text == "from groq"
+    assert router.complete(MESSAGES, model="judge", temperature=0.0).text == "from openai"
+    assert groq.requests[0]["temperature"] == 0.0  # Groq request shape unchanged
+    assert "temperature" not in openai.requests[0]  # model only accepts its default
+
+
+def test_router_reports_a_missing_provider_key_by_name():
+    from medquery.llm import Router
+
+    router = Router(
+        {"groq": make_client(FakeTransport())[0]},
+        provider_of={"gpt-6.1-sol": "openai"}.__getitem__,
+        overrides={},
+    )
+    with pytest.raises(LLMError, match="OPENAI_API_KEY is not set"):
+        router.complete(MESSAGES, model="gpt-6.1-sol")
+
+
+def test_every_configured_model_has_a_provider_and_a_price():
+    from medquery import config
+
+    models = {
+        config.GENERATOR_MODEL,
+        config.JUDGE_MODEL,
+        config.GOLDEN_AUTHOR_MODEL,
+        config.PREVIOUS_JUDGE_MODEL,
+    }
+    for model in models:
+        assert config.provider_of(model) in config.PROVIDERS
+        assert model in config.PRICES
+    assert config.PROVIDERS["openai"]["key_env"] == "OPENAI_API_KEY"
+    assert config.MODEL_OVERRIDES[config.JUDGE_MODEL] == {"temperature": None}
+
+
+def test_both_provider_keys_are_redacted_from_errors():
+    other = "sk-openai-test-key-0123456789abcdef"
+    client = LLMClient(
+        FakeTransport(TransportError(401, {}, f"bad keys {SECRET} and {other}")),
+        provider="openai",
+        cache=None,
+        throttle_factory=lambda: Throttle(30, 8000),
+        secrets=(SECRET, other),
+    )
+    with pytest.raises(LLMError) as info:
+        client.complete(MESSAGES, model="m")
+    assert SECRET not in str(info.value) and other not in str(info.value)
