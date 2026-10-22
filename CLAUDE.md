@@ -68,12 +68,12 @@ Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), an
 **Phase 0 (setup): done and approved.** CI is green on GitHub (origin: https://github.com/RajalingamMuthiah/MedQuery).
 **Phase 1 (corpus and ingestion): done and approved.** CI is green (Tesseract OCR tests run on Ubuntu). It ingests 10 approved public-domain PDFs. Ruled tables (grid, open-sided and booktabs) become Markdown table chunks. Scanned pages are OCR'd. Chunks are section-aware, and short chunks merge within their section. Per-document stats, including mean OCR confidence, are in `data/processed/build_summary.json`.
 Short chunks (under 30 words) are below the user's 8% threshold. The current rate is printed by `build` and stored in `build_summary.json`. Chunking will be judged by retrieval metrics in Phase 2.
-**Phase 2 (baseline RAG and evaluation harness): done, awaiting review (2026-10-22).**
+**Phase 2 (baseline RAG and evaluation harness): done and approved (2026-10-22).**
 - **Final reports, from clean commits:**
   - dev `medquery/eval/reports/2026-10-22_baseline_dev_e1f69bdb8e0a.md`: answer correctness 0.735, recall@5 0.662, abstention accuracy 0.841;
   - test `…_test_b2bcda7e0fda.md`: correctness 0.611, false abstention 0.389.
 - **Main baseline weakness:** false abstention on answerable questions that retrieval misses.
-- **Next:** Phase 3 (BM25, rank fusion, reranker; ablation on dev only). It also includes the judge_v2 re-validation on a fresh labelled sample.
+- **Next:** Phase 3, retrieval upgrades (brief: `docs/brief/phase3-prompt.md`). BM25 with RRF, a reranker, then contextual chunk headers, as a cumulative ablation on **dev only**: the test split is not run in Phase 3. Each step is compared with paired bootstrap differences, and the phase ends with a fresh judge re-validation sample. The plan is being proposed.
 **Phase 2 Part B2 (2026-10-22):** judge switched to OpenAI `gpt-6.1-sol` with `judge_v1`, at the user's decision.
 - **Hand labels:** `labels` (v1, `ca799c8b…`), then `labels_r2` (`8d2ee727…`). r2 corrects r022, r027, r028 and r050 after the user re-checked them.
 - **Measurements on r2** (raw counts use matched units only):
