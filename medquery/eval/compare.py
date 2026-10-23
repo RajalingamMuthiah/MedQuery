@@ -99,6 +99,36 @@ def comparison_partner(index: int, runs: list) -> int:
     return index - 1
 
 
+BEST_ROW_RULE = (
+    "highest answer correctness on dev; ties broken by the lower false-abstention rate "
+    "(point estimates)"
+)
+
+
+def best_row(runs: list) -> tuple[int, list[dict]]:
+    """Index of the best row among those at the default k, by BEST_ROW_RULE, and the values
+    the choice was made on (one dict per candidate, in run order)."""
+    table = []
+    for index, (cfg, _, records) in enumerate(runs):
+        if cfg.k != settings.TOP_K:
+            continue
+        table.append(
+            {
+                "index": index,
+                "config": cfg.name,
+                "answer_correctness": metrics.answer_correctness(records),
+                "false_abstention_rate": metrics.false_abstention_rate(records),
+            }
+        )
+    if not table:
+        raise ValueError(f"no row at k = {settings.TOP_K} to choose from")
+    best = min(
+        table,
+        key=lambda t: (-round(t["answer_correctness"], 9), round(t["false_abstention_rate"], 9)),
+    )
+    return best["index"], table
+
+
 def gold_position(record: dict, k: int) -> str:
     """Where the best-ranked gold chunk sat: in the generator's k passages, retrieved but
     beyond k (within the top 10), or not in the top 10."""
@@ -288,6 +318,34 @@ def ablation_markdown(
             + " | ".join(cells)
             + f" | {m['both_gold_in_context']} of {m['n']} |"
         )
+
+    larger = [cfg for cfg, _, _ in runs if cfg.k != settings.TOP_K]
+    if larger:
+        chosen, table = best_row(runs)
+        best_cfg = runs[chosen][0]
+        lines += [
+            "",
+            f"## Choice of the k = {larger[0].k} row",
+            "",
+            f"Rule, stated before the k = {larger[0].k} run: {BEST_ROW_RULE}. Candidates are "
+            f"all rows at k = {settings.TOP_K}, including post-hoc ones.",
+            "",
+            "| config | answer correctness | false-abstention rate | chosen |",
+            "|---|---|---|---|",
+        ]
+        for t in table:
+            lines.append(
+                f"| `{t['config']}` | {_fmt(t['answer_correctness'])} | "
+                f"{_fmt(t['false_abstention_rate'])} | "
+                f"{'**yes**' if t['index'] == chosen else ''} |"
+            )
+        for cfg in larger:
+            same = _same_except(cfg, best_cfg, k=best_cfg.k)
+            lines.append(
+                f"`{cfg.name}` is "
+                + ("the chosen row at k = " if same else "**NOT** the chosen row at k = ")
+                + f"{cfg.k}."
+            )
 
     lines += [
         "",

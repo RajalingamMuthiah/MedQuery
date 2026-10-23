@@ -73,7 +73,13 @@ Short chunks (under 30 words) are below the user's 8% threshold. The current rat
   - dev `medquery/eval/reports/2026-10-22_baseline_dev_e1f69bdb8e0a.md`: answer correctness 0.735, recall@5 0.662, abstention accuracy 0.841;
   - test `…_test_b2bcda7e0fda.md`: correctness 0.611, false abstention 0.389.
 - **Main baseline weakness:** false abstention on answerable questions that retrieval misses.
-- **Next:** Phase 3, retrieval upgrades (brief: `docs/brief/phase3-prompt.md`). BM25 with RRF, a reranker, then contextual chunk headers, as a cumulative ablation on **dev only**: the test split is not run in Phase 3. Each step is compared with paired bootstrap differences, and the phase ends with a fresh judge re-validation sample. The plan is being proposed.
+- **Next:** Phase 3, retrieval upgrades (brief: `docs/brief/phase3-prompt.md`). BM25 with RRF, a reranker, then contextual chunk headers, as a cumulative ablation on **dev only**: the test split is not run in Phase 3. Each step is compared with paired bootstrap differences, and the phase ends with a fresh judge re-validation sample.
+
+**Phase 3 (retrieval upgrades): in progress** (plan approved).
+- **Rows (dev only):** `baseline`, `hybrid`, `hybrid_rerank`, `hybrid_rerank_headers`, `hybrid_rerank_maxp` (post-hoc), then the best row at k = 8.
+- **Best-row rule** (`best-row --configs ...`, recorded in the ablation report): highest dev answer correctness; ties broken by the lower false-abstention rate. Every k = 5 row is a candidate, including MaxP.
+- **Comparisons:** paired bootstrap against the previous row; a k = 8 row against its k = 5 config; MaxP against the same config with truncated reranker input. Guards: `abstention_recall` and `citation_accuracy`.
+- **Then:** the ablation report, the fresh judge sample `judge_review_v2` (25 claims, 10 answers, excluding v1-labelled units), and STOP for the user's labels.
 **Phase 2 Part B2 (2026-10-22):** judge switched to OpenAI `gpt-6.1-sol` with `judge_v1`, at the user's decision.
 - **Hand labels:** `labels` (v1, `ca799c8b…`), then `labels_r2` (`8d2ee727…`). r2 corrects r022, r027, r028 and r050 after the user re-checked them.
 - **Measurements on r2** (raw counts use matched units only):
@@ -101,6 +107,9 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
   - All LLM calls go through the router, throttle, retries and disk cache in `medquery/llm/`. Eval runs are resumable.
 - **Judge measurements on frozen labels:** a different judge model splits claims differently. Each labelled claim maps to the re-extracted claims that make it up (`matching_parts`: content-word containment of at least 0.7, otherwise text similarity of at least 0.6). It is unsupported if any part is. Unmatched units are reported, never guessed.
 - **Crash-safe outputs:** use `medquery/fileio.py` for every generated artifact, including eval reports. `atomic_write(path)` writes to a temp file and then calls `os.replace()`, so a crash never leaves a half-written file. `exclusive_lock(path)` refuses to start a second run. The build locks `data/processed/.build.lock`. If a crash leaves the lock behind, delete it once you have checked no run is active. Never run two builds at once: overlapping runs corrupted `chunks.jsonl` once during Phase 1.
+
+### Carry-forward for Phase 6 (live API)
+- **MaxP reranker window:** `MAXP_WINDOW = 320` tokens (overlap 96) in `medquery/eval/runner.py` assumes questions of at most 56 tokens (the longest golden question) and headers of at most 115 tokens (the longest in the corpus): 320 + 115 + 56 + 3 special tokens = 494, under bge-reranker-base's 512. Live user questions can be longer. Compute the window from the actual question (and header) length per request, or cap the question length, so every reranker input stays under 512 tokens.
 
 ### Ingestion design notes
 - Text order comes from pdfminer text boxes, which handle two-column layouts. Running headers and footers, page numbers and table-of-contents pages are dropped.
@@ -141,4 +150,8 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
 - Phase 2: evidence normalisation ignores whitespace between a digit and the letter that follows ("130/80 mmHg" matches "130/80mmHg"), because PDF text layers drop such spaces. It's applied to both quotes and chunks.
 - Phase 2: top-ups append to `review_v1.csv` byte for byte (`append_review_csv`), so the user's edited rows are never rewritten.
 - Phase 2: the retry, throttle and cache logic lives in `medquery/llm/client.py`, separate from the protocol in `base.py`, so it can be tested with a fake transport.
+- Phase 3 (user request): the reranker truncation share (inputs over 512 tokens) is reported per row, with a note above 10%, and multi-chunk questions get their own breakout.
+- Phase 3 (**post-hoc row, user request**): `hybrid_rerank_maxp` was added after dev showed 34.9% of `hybrid_rerank` inputs were truncated. It scores each passage as the max over 320-token windows (overlap 96), with the header on each window only if `hybrid_rerank_headers` beat `hybrid_rerank` by the best-row rule. The ablation report labels it post-hoc.
+- Phase 3 (user request): the ablation report includes `abstention_recall` and `citation_accuracy` with paired differences, as guards.
+- Phase 3: code changes made while a dev run was in progress went into a separate git worktree (branch `phase3-maxp`), then were fast-forwarded into main, so every report records the clean commit it ran from.
 - Phase 1 (local environment only): Tesseract's English model was missing, so `eng.traineddata` from tessdata_fast 4.1.0 was added to `%LOCALAPPDATA%\Tesseract-OCR\tessdata`.

@@ -8,7 +8,7 @@ import sys
 from collections import Counter
 
 from medquery import config, paths
-from medquery.eval.compare import write_ablation
+from medquery.eval.compare import BEST_ROW_RULE, best_row, write_ablation
 from medquery.eval.evidence import EvidenceMapper
 from medquery.eval.freeze import FreezeError, freeze, load_golden, sha256_file, write_frozen
 from medquery.eval.gitinfo import git_state
@@ -416,15 +416,8 @@ def cmd_judge_sample(run: str, version: str = "v1", exclude_labelled: str | None
     return 0
 
 
-def cmd_ablation(split: str, config_names: list[str]) -> int:
-    """Ablation report over completed runs of the given configs (dev only, clean tree)."""
-    if split != "dev":
-        print("refused: Phase 3 ablations use the dev split only")
-        return 1
-    git = git_state()
-    if git["dirty"] is not False:
-        print("refused: ablation reports need a clean, committed git tree")
-        return 1
+def _completed_runs(split: str, config_names: list[str]):
+    """(runs, golden meta, chunks sha) for completed runs of the configs, or None."""
     items, golden_meta = load_golden("v1")
     chunks_sha = sha256_file(CHUNKS)
     total = sum(1 for i in items if i["split"] == split)
@@ -435,8 +428,41 @@ def cmd_ablation(split: str, config_names: list[str]) -> int:
         records = sorted(load_records(RUNS_DIR / rid / "items.jsonl"), key=lambda r: r["id"])
         if len(records) != total:
             print(f"run {rid} ({name}) has {len(records)} of {total} items; finish it first")
-            return 1
+            return None
         runs.append((cfg, rid, records))
+    return runs, golden_meta, chunks_sha
+
+
+def cmd_best_row(config_names: list[str]) -> int:
+    """Apply the best-row rule to completed dev runs (decides the k = 8 row)."""
+    loaded = _completed_runs("dev", config_names)
+    if loaded is None:
+        return 1
+    runs = loaded[0]
+    chosen, table = best_row(runs)
+    print(f"rule: {BEST_ROW_RULE}")
+    for t in table:
+        mark = "  <- best" if t["index"] == chosen else ""
+        print(
+            f"  {t['config']:<28} answer correctness {t['answer_correctness']:.3f}  "
+            f"false-abstention rate {t['false_abstention_rate']:.3f}{mark}"
+        )
+    return 0
+
+
+def cmd_ablation(split: str, config_names: list[str]) -> int:
+    """Ablation report over completed runs of the given configs (dev only, clean tree)."""
+    if split != "dev":
+        print("refused: Phase 3 ablations use the dev split only")
+        return 1
+    git = git_state()
+    if git["dirty"] is not False:
+        print("refused: ablation reports need a clean, committed git tree")
+        return 1
+    loaded = _completed_runs(split, config_names)
+    if loaded is None:
+        return 1
+    runs, golden_meta, chunks_sha = loaded
     for path in write_ablation(runs, split, git, golden_meta, chunks_sha):
         print(f"wrote {path.relative_to(paths.ROOT)}")
     return 0
@@ -610,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
     abl = sub.add_parser("ablation", help="paired comparison of completed dev runs")
     abl.add_argument("--split", choices=["dev", "test"], default="dev")
     abl.add_argument("--configs", nargs="+", choices=sorted(CONFIGS), required=True)
+    best = sub.add_parser("best-row", help="apply the best-row rule to completed dev runs")
+    best.add_argument("--configs", nargs="+", choices=sorted(CONFIGS), required=True)
     jr = sub.add_parser("judge-review").add_subparsers(dest="action", required=True)
     jr_freeze = jr.add_parser("freeze", help="freeze hand labels and report agreement")
     jr_freeze.add_argument("--labeller", required=True, help="who labelled, recorded in meta")
@@ -642,6 +670,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_judge_sample(args.run, args.version, args.exclude_labelled)
     if args.group == "ablation":
         return cmd_ablation(args.split, args.configs)
+    if args.group == "best-row":
+        return cmd_best_row(args.configs)
     if args.group == "golden" and args.action == "freeze":
         excluded = {x.strip() for x in args.exclude.split(",") if x.strip()}
         return cmd_golden_freeze(args.version, args.reviewer, excluded, args.check)

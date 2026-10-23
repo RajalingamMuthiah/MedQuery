@@ -312,3 +312,37 @@ def test_report_has_guard_metrics_and_labels_the_post_hoc_row():
     assert "MaxP: 320-token windows, overlap 96" in md
     assert "whole passage (truncated at 512)" in md
     assert any(r["metric"] == "diff_vs:hybrid_rerank:abstention_recall" for r in csv_rows)
+
+
+# --- best row (decides the k = 8 run) ---
+
+
+def scored(correct_every=1, abstain_every=0, n=20):
+    """Rows where every `correct_every`-th answer is correct and the rest incorrect."""
+    out = records(n, abstain_every=abstain_every)
+    for i, r in enumerate(out):
+        if r["judge"] and i % correct_every:
+            r["judge"]["correctness"] = "incorrect"
+    return out
+
+
+def test_best_row_takes_correctness_then_lower_false_abstention():
+    a = CONFIGS["hybrid"]
+    b = CONFIGS["hybrid_rerank"]
+    c = CONFIGS["hybrid_rerank_headers"]
+    k8 = CONFIGS["hybrid_rerank_k8"]
+    # b and c tie on correctness (0.5); c abstains less, so c wins. a is lower (0.25).
+    rows_a = scored(correct_every=4)
+    rows_b = records(20, abstain_every=2)  # 10 abstained, 10 correct -> 0.5
+    rows_c = scored(correct_every=2)  # 10 correct, 10 incorrect, 0 abstained -> 0.5
+    runs = [(a, "a", rows_a), (b, "b", rows_b), (c, "c", rows_c), (k8, "d", records())]
+    chosen, table = compare.best_row(runs)
+    assert [t["config"] for t in table] == [a.name, b.name, c.name]  # k = 8 row not a candidate
+    assert table[1]["answer_correctness"] == table[2]["answer_correctness"] == 0.5
+    assert chosen == 2  # tie on correctness; c has the lower false-abstention rate
+    md, _ = ablation_markdown(runs, "dev", GIT, GOLDEN, "c" * 64, "t")
+    assert "## Choice of the k = 8 row" in md
+    assert "`hybrid_rerank_k8` is **NOT** the chosen row at k = 8." in md
+    runs[3] = (CONFIGS["hybrid_rerank_headers_k8"], "d", records())
+    md, _ = ablation_markdown(runs, "dev", GIT, GOLDEN, "c" * 64, "t")
+    assert "`hybrid_rerank_headers_k8` is the chosen row at k = 8." in md
