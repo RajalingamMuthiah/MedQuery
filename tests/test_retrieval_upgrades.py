@@ -7,11 +7,19 @@ from dataclasses import asdict
 import pytest
 
 from medquery.eval import runner
-from medquery.eval.runner import CONFIGS, RETRIEVAL_DEFAULTS, RunConfig, build_retriever, run_id
+from medquery.eval.runner import (
+    CONFIGS,
+    MAXP_OVERLAP,
+    MAXP_WINDOW,
+    RETRIEVAL_DEFAULTS,
+    RunConfig,
+    build_retriever,
+    run_id,
+)
 from medquery.retrieval.bm25 import BM25, tokenize
 from medquery.retrieval.fusion import RRF_K, rrf
 from medquery.retrieval.pipeline import HybridRetriever, index_text
-from medquery.retrieval.rerank import FastEmbedReranker, rerank
+from medquery.retrieval.rerank import FastEmbedReranker, rerank, rerank_maxp, split_windows
 from tests.test_rag import CHUNKS, FakeEmbedder, chunk
 
 # --- BM25 ---
@@ -84,6 +92,15 @@ class FakeEncoder:
 
     def count_truncated(self, query, texts):
         return sum(len(query) + len(t) > self.max_chars for t in texts)
+
+    def windows(self, text, size, overlap):
+        """Word 'tokens', so window arithmetic is easy to check by hand."""
+        offsets, pos = [], 0
+        for word in text.split():
+            pos = text.index(word, pos)
+            offsets.append((pos, pos + len(word)))
+            pos += len(word)
+        return split_windows(text, offsets, size, overlap)
 
 
 def test_rerank_reorders_by_score_and_only_scores_the_top_n():
@@ -200,3 +217,67 @@ def test_build_retriever_picks_the_pipeline(monkeypatch):
     assert kw["use_bm25"] and kw["headers"] and kw["reranker"] is encoder and kw["rerank_n"] == 20
     build_retriever(CONFIGS["hybrid"], CHUNKS, FakeEmbedder())
     assert built[-1]["reranker"] is None and not built[-1]["headers"]
+
+
+# --- MaxP reranking over windows ---
+
+
+def test_split_windows_overlap_and_cover_the_whole_text():
+    text = " ".join(f"w{i}" for i in range(10))
+    offsets, pos = [], 0
+    for word in text.split():
+        pos = text.index(word, pos)
+        offsets.append((pos, pos + len(word)))
+        pos += len(word)
+    windows = split_windows(text, offsets, size=4, overlap=1)
+    assert windows == ["w0 w1 w2 w3", "w3 w4 w5 w6", "w6 w7 w8 w9"]
+    assert split_windows("w0 w1", offsets[:2], size=4, overlap=1) == ["w0 w1"]
+    assert split_windows(text, offsets, size=4, overlap=0)[-1] == "w8 w9"
+    with pytest.raises(ValueError):
+        split_windows(text, offsets, size=4, overlap=4)
+
+
+def test_maxp_scores_a_passage_by_its_best_window_with_the_prefix_on_each():
+    late = {"id": "late", "t": "a b c d e f sodium sodium"}  # truncation would miss it
+    early = {"id": "early", "t": "sodium a b c d e f g"}
+    encoder = FakeEncoder()
+    ranked, inputs = rerank_maxp(
+        "q", [early, late], lambda c: "H\n", lambda c: c["t"], encoder, n=2, size=4, overlap=1
+    )
+    assert [c["id"] for c, _ in ranked] == ["late", "early"]
+    assert ranked[0][1] == 2.0 and ranked[1][1] == 1.0
+    assert all(x.startswith("H\n") for x in inputs)
+    assert len(inputs) == 6  # 8 words, window 4, stride 3: 3 windows each
+    assert encoder.seen == [inputs]  # one batched call
+
+
+def test_maxp_pipeline_reports_windows_and_no_truncation(tmp_path):
+    long_chunk = chunk("htn:0002", " ".join(["filler"] * 30) + " sodium sodium sodium")
+    r = HybridRetriever(
+        FakeEmbedder(),
+        [*CHUNKS, long_chunk],
+        embed_cache=tmp_path / "e.npz",
+        use_bm25=True,
+        headers=True,
+        reranker=FakeEncoder(max_chars=200),
+        rerank_window=8,
+        rerank_overlap=2,
+    )
+    hits, _ = r.retrieve("sodium", 2)
+    assert hits[0].chunk["id"] == "htn:0002"  # its best window has three "sodium"
+    assert hits[0].chunk["text"] == long_chunk["text"]  # generator text unchanged
+    assert r.last_stats["rerank_pairs"] > len(CHUNKS) + 1  # windows, not passages
+    assert r.last_stats["rerank_truncated"] == 0
+
+
+def test_maxp_config_fields_change_the_run_id_only_when_set():
+    assert RETRIEVAL_DEFAULTS["rerank_window"] == 0 and RETRIEVAL_DEFAULTS["rerank_overlap"] == 0
+    assert MAXP_OVERLAP < MAXP_WINDOW <= 512 - 100
+    maxp = RunConfig(
+        name="hybrid_rerank",
+        retriever="hybrid",
+        rerank_model="BAAI/bge-reranker-base",
+        rerank_window=MAXP_WINDOW,
+        rerank_overlap=MAXP_OVERLAP,
+    )
+    assert run_id(maxp, "dev", "g", "c") != run_id(CONFIGS["hybrid_rerank"], "dev", "g", "c")

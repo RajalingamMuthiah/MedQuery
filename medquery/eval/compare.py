@@ -3,7 +3,7 @@ failure diagnosis per config, a multi-chunk breakout and reranker truncation."""
 
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,7 +22,12 @@ PAIRED = [
     ("recall@5", metrics.recall_at(5)),
     ("mrr", metrics.mrr),
     ("false_abstention_rate", metrics.false_abstention_rate),
+    # Guards: better retrieval must not make the system answer unanswerable questions or
+    # cite less accurately.
+    ("abstention_recall", metrics.abstention_recall),
+    ("citation_accuracy", metrics.citation_accuracy),
 ]
+LOWER_IS_BETTER = {"false_abstention_rate"}
 SUMMARY = [
     ("answer_correctness", metrics.answer_correctness),
     ("faithfulness", metrics.faithfulness),
@@ -33,7 +38,13 @@ SUMMARY = [
     ("mrr", metrics.mrr),
     ("abstention_accuracy", metrics.abstention_accuracy),
     ("false_abstention_rate", metrics.false_abstention_rate),
+    ("abstention_recall", metrics.abstention_recall),
+    ("citation_accuracy", metrics.citation_accuracy),
 ]
+# Rows added after looking at dev results, labelled as such in the report.
+POST_HOC = {
+    "hybrid_rerank_maxp": "post-hoc fix, decided after seeing dev reranker truncation",
+}
 TRUNCATION_NOTE = 0.10  # note it in the report above this share of reranker inputs
 
 
@@ -68,6 +79,24 @@ def paired_bootstrap(
             values.append(d)
     low, high = np.percentile(values, [2.5, 97.5])
     return point, float(low), float(high)
+
+
+def _same_except(a: RunConfig, b: RunConfig, **fields) -> bool:
+    return asdict(replace(a, name="", **fields)) == asdict(replace(b, name=""))
+
+
+def comparison_partner(index: int, runs: list) -> int:
+    """Which earlier row row `index` is compared with: a k = 8 row with the same config at
+    k = 5; a MaxP row with the same config truncating instead of windowing; otherwise the
+    previous row (the cumulative ablation)."""
+    cfg = runs[index][0]
+    for j in range(index):
+        other = runs[j][0]
+        if cfg.k != other.k and _same_except(cfg, other, k=other.k):
+            return j
+        if cfg.rerank_window and _same_except(cfg, other, rerank_window=0, rerank_overlap=0):
+            return j
+    return index - 1
 
 
 def gold_position(record: dict, k: int) -> str:
@@ -121,6 +150,14 @@ def truncation(records: list[dict]) -> dict | None:
     return {"pairs": pairs, "truncated": cut, "share": cut / pairs if pairs else 0.0}
 
 
+def _rerank_input(cfg: RunConfig) -> str:
+    if not cfg.rerank_model:
+        return "-"
+    if cfg.rerank_window:
+        return f"MaxP: {cfg.rerank_window}-token windows, overlap {cfg.rerank_overlap}"
+    return "whole passage (truncated at 512)"
+
+
 def _latency(records: list[dict]) -> dict:
     return {
         "retrieval_ms": {
@@ -158,8 +195,8 @@ def ablation_markdown(
         "## Configurations",
         "",
         "| row | config | run id | retriever | RRF k | reranker (licence) | rerank N "
-        "| headers | k |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| rerank input | headers | k | note |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for n, (cfg, rid, _) in enumerate(runs, 1):
         reranker = (
@@ -170,7 +207,8 @@ def ablation_markdown(
         lines.append(
             f"| {n} | `{cfg.name}` | `{rid}` | {cfg.retriever} | "
             f"{cfg.fuse_k if cfg.retriever == 'hybrid' else '-'} | {reranker} | "
-            f"{cfg.rerank_n if cfg.rerank_model else '-'} | {cfg.headers} | {cfg.k} |"
+            f"{cfg.rerank_n if cfg.rerank_model else '-'} | {_rerank_input(cfg)} | "
+            f"{cfg.headers} | {cfg.k} | {POST_HOC.get(cfg.name, '')} |"
         )
 
     csv_rows: list[dict] = []
@@ -193,12 +231,17 @@ def ablation_markdown(
 
     lines += [
         "",
-        "## Paired differences vs the previous row",
+        "## Paired differences",
         "",
-        "| config vs previous | metric | difference | 95% CI | real? |",
+        "Each row against the previous row, except: a k = 8 row against the same config at "
+        "k = 5, and a MaxP row against the same config with truncated reranker input.",
+        "",
+        "| config vs comparison row | metric | difference | 95% CI | real? |",
         "|---|---|---|---|---|",
     ]
-    for (prev_cfg, _, prev), (cfg, _, cur) in zip(runs, runs[1:], strict=False):
+    for index in range(1, len(runs)):
+        prev_cfg, _, prev = runs[comparison_partner(index, runs)]
+        cfg, _, cur = runs[index]
         for name, fn in PAIRED:
             d, low, high = paired_bootstrap(prev, cur, fn)
             real = "n/a" if low is None else ("**yes**" if low > 0 or high < 0 else "no")
@@ -209,13 +252,18 @@ def ablation_markdown(
             csv_rows.append(
                 {
                     "config": cfg.name,
-                    "metric": f"diff_vs_previous:{name}",
+                    "metric": f"diff_vs:{prev_cfg.name}:{name}",
                     "value": d,
                     "ci_low": low,
                     "ci_high": high,
                 }
             )
-    lines.append("For false_abstention_rate a negative difference is an improvement.")
+    lines.append(
+        "For false_abstention_rate a negative difference is an improvement; for every other "
+        "metric, a positive one. abstention_recall (unanswerable questions where the system "
+        "abstained) and citation_accuracy are guards: a real drop in either means better "
+        "retrieval made the system answer unanswerable questions or cite less accurately."
+    )
 
     lines += [
         "",
@@ -260,7 +308,10 @@ def ablation_markdown(
         "",
         "## Reranker input truncation",
         "",
-        "| config | pairs scored | over max length (truncated) | share |",
+        "Inputs scored are (question, passage) pairs; for a MaxP row, (question, window) "
+        "pairs. Truncated = over the model's 512-token limit.",
+        "",
+        "| config | inputs scored | over max length (truncated) | share |",
         "|---|---|---|---|",
     ]
     notes = []

@@ -42,6 +42,8 @@ class RunConfig:
     rerank_model: str = ""
     rerank_n: int = 20
     headers: bool = False
+    rerank_window: int = 0  # > 0: MaxP over windows of this many tokens; 0: truncate
+    rerank_overlap: int = 0
 
 
 RETRIEVAL_DEFAULTS = {
@@ -50,7 +52,13 @@ RETRIEVAL_DEFAULTS = {
     "rerank_model": "",
     "rerank_n": 20,
     "headers": False,
+    "rerank_window": 0,
+    "rerank_overlap": 0,
 }
+# MaxP windows for bge-reranker-base's 512-token input: 320 passage tokens + the longest
+# header in the corpus (115 tokens) + the longest golden question (56) + 3 special tokens =
+# 494. Overlap 96 (stride 224), so a sentence cut at one window's edge is whole in the next.
+MAXP_WINDOW, MAXP_OVERLAP = 320, 96
 _HYBRID = RunConfig(name="hybrid", retriever="hybrid")
 _RERANK = replace(_HYBRID, name="hybrid_rerank", rerank_model="BAAI/bge-reranker-base")
 _HEADERS = replace(_RERANK, name="hybrid_rerank_headers", headers=True)
@@ -91,6 +99,8 @@ def build_retriever(config: RunConfig, chunks: list[dict], embedder, reranker=No
         headers=config.headers,
         reranker=reranker if config.rerank_model else None,
         rerank_n=config.rerank_n,
+        rerank_window=config.rerank_window,
+        rerank_overlap=config.rerank_overlap,
         fuse_k=config.fuse_k,
     )
 

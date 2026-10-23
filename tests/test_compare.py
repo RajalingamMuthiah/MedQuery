@@ -143,7 +143,7 @@ def test_ablation_report_rows_and_real_verdicts(tmp_path):
     assert "`abc` (clean working tree)" in md
     assert "| `hybrid` vs `baseline` | answer_correctness | +1.000 |" in md
     assert "**yes**" in md and "BAAI" not in md.split("## Metrics")[0].split("baseline")[1][:40]
-    assert {r["metric"] for r in rows} >= {"answer_correctness", "diff_vs_previous:mrr"}
+    assert {r["metric"] for r in rows} >= {"answer_correctness", "diff_vs:baseline:mrr"}
     assert "## Multi-chunk questions" in md and "## Latency and cost" in md
     written = write_ablation(runs, "dev", GIT, GOLDEN, "c" * 64, out_dir=tmp_path)
     assert [p.suffix for p in written] == [".md", ".csv"] and "_ablation_dev_" in written[0].name
@@ -279,3 +279,36 @@ def test_k8_row_reuses_the_best_row():
         == (CONFIGS["hybrid_rerank_k8"])
     )
     assert claim(True)["supported_by_context"]
+
+
+# --- comparison partners, guards and post-hoc labels ---
+
+
+def test_k8_and_maxp_rows_are_compared_with_their_own_counterparts():
+    rerank = CONFIGS["hybrid_rerank"]
+    maxp = replace(rerank, name="hybrid_rerank_maxp", rerank_window=320, rerank_overlap=96)
+    k8 = replace(maxp, name="hybrid_rerank_maxp_k8", k=8)
+    runs = [
+        (CONFIGS["baseline"], "a", []),
+        (CONFIGS["hybrid"], "b", []),
+        (rerank, "c", []),
+        (CONFIGS["hybrid_rerank_headers"], "d", []),
+        (maxp, "e", []),
+        (k8, "f", []),
+    ]
+    assert [compare.comparison_partner(i, runs) for i in range(1, 6)] == [0, 1, 2, 2, 4]
+
+
+def test_report_has_guard_metrics_and_labels_the_post_hoc_row():
+    rerank = CONFIGS["hybrid_rerank"]
+    maxp = replace(rerank, name="hybrid_rerank_maxp", rerank_window=320, rerank_overlap=96)
+    rows_a = records(abstain_every=0) + [record("u1", answerable=False, abstained=True)]
+    rows_b = records(abstain_every=0) + [record("u1", answerable=False, abstained=False)]
+    runs = [(rerank, "c", rows_a), (maxp, "e", rows_b)]
+    md, csv_rows = ablation_markdown(runs, "dev", GIT, GOLDEN, "c" * 64, "t")
+    assert "| `hybrid_rerank_maxp` vs `hybrid_rerank` | abstention_recall | -1.000 |" in md
+    assert "| `hybrid_rerank_maxp` vs `hybrid_rerank` | citation_accuracy |" in md
+    assert "post-hoc fix, decided after seeing dev reranker truncation" in md
+    assert "MaxP: 320-token windows, overlap 96" in md
+    assert "whole passage (truncated at 512)" in md
+    assert any(r["metric"] == "diff_vs:hybrid_rerank:abstention_recall" for r in csv_rows)
