@@ -1,0 +1,18 @@
+metric,value,ci_low,ci_high,over,definition
+answer_correctness,0.9411764705882353,0.8571428571428571,1.0,answerable,"judge vs reference: correct 1, partial 0.5, incorrect 0; abstained = 0"
+faithfulness,0.9340277777777778,0.8720361509835195,0.987665343915344,answered,"per answer, claims supported by retrieved passages / claims; mean"
+hallucination_rate,0.11594202898550725,0.025300828254414764,0.22059678522571818,answered,"unsupported claims / all claims, pooled"
+answer_relevancy,1.0,1.0,1.0,answered,judge rating 1-5 scaled to 0-1
+context_precision,0.6563725490196078,0.5358634085213032,0.7792972972972974,answerable,rank-aware AP@k over the generator's passages; relevant = maps to a gold quote
+context_recall,0.8823529411764706,0.7567567567567568,0.9714285714285714,answerable,gold evidence items covered by the generator's passages
+recall@1,0.47058823529411764,0.3125,0.6290471923536439,answerable,gold chunks in the top 1 / gold
+recall@3,0.8088235294117647,0.6724003232758621,0.9189298169136879,answerable,gold chunks in the top 3 / gold
+recall@5,0.8823529411764706,0.7567567567567568,0.9714285714285714,answerable,gold chunks in the top 5 / gold
+recall@10,0.9117647058823529,0.8055555555555556,1.0,answerable,gold chunks in the top 10 / gold
+mrr,0.6838235294117647,0.5555147058823529,0.8073113952020201,answerable,1 / rank of the first gold chunk in the top 10
+citation_accuracy,0.7878787878787878,0.6307407407407407,0.9454545454545454,answered,"cited claims whose cited passages support them / cited claims, pooled"
+citation_validity,0.9777777777777777,0.9230769230769231,1.0,answered,citations naming a passage given to the generator / citations
+uncited_claim_share,0.043478260869565216,0.0,0.1,answered,claims with no citation
+abstention_accuracy,0.9545454545454546,0.8863636363636364,1.0,all,"abstain on unanswerable, answer on answerable"
+abstention_recall,1.0,1.0,1.0,unanswerable,unanswerable questions where the system abstained
+false_abstention_rate,0.058823529411764705,0.0,0.14285714285714285,answerable,answerable questions where the system abstained
