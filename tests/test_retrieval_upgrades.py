@@ -2,7 +2,7 @@
 pipeline. All offline: fake embedder and fake cross-encoder."""
 
 import math
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -281,3 +281,13 @@ def test_maxp_config_fields_change_the_run_id_only_when_set():
         rerank_overlap=MAXP_OVERLAP,
     )
     assert run_id(maxp, "dev", "g", "c") != run_id(CONFIGS["hybrid_rerank"], "dev", "g", "c")
+
+
+def test_every_k5_candidate_has_a_k8_config_and_maxp_rows_window():
+    for name, cfg in CONFIGS.items():
+        if cfg.k == 5:
+            assert CONFIGS[f"{name}_k8"] == replace(cfg, name=f"{name}_k8", k=8)
+    for name in ("hybrid_rerank_maxp", "hybrid_rerank_headers_maxp"):
+        cfg = CONFIGS[name]
+        assert (cfg.rerank_window, cfg.rerank_overlap) == (MAXP_WINDOW, MAXP_OVERLAP)
+        assert cfg.headers == ("headers" in name)

@@ -43,7 +43,13 @@ SUMMARY = [
 ]
 # Rows added after looking at dev results, labelled as such in the report.
 POST_HOC = {
-    "hybrid_rerank_maxp": "post-hoc fix, decided after seeing dev reranker truncation",
+    name: "post-hoc fix, decided after seeing dev reranker truncation"
+    for name in (
+        "hybrid_rerank_maxp",
+        "hybrid_rerank_headers_maxp",
+        "hybrid_rerank_maxp_k8",
+        "hybrid_rerank_headers_maxp_k8",
+    )
 }
 TRUNCATION_NOTE = 0.10  # note it in the report above this share of reranker inputs
 

@@ -62,6 +62,10 @@ MAXP_WINDOW, MAXP_OVERLAP = 320, 96
 _HYBRID = RunConfig(name="hybrid", retriever="hybrid")
 _RERANK = replace(_HYBRID, name="hybrid_rerank", rerank_model="BAAI/bge-reranker-base")
 _HEADERS = replace(_RERANK, name="hybrid_rerank_headers", headers=True)
+_MAXP = replace(
+    _RERANK, name="hybrid_rerank_maxp", rerank_window=MAXP_WINDOW, rerank_overlap=MAXP_OVERLAP
+)
+_HEADERS_MAXP = replace(_MAXP, name="hybrid_rerank_headers_maxp", headers=True)
 CONFIGS = {
     "baseline": RunConfig(),
     "hybrid": _HYBRID,
@@ -71,6 +75,15 @@ CONFIGS = {
     "hybrid_k8": replace(_HYBRID, name="hybrid_k8", k=8),
     "hybrid_rerank_k8": replace(_RERANK, name="hybrid_rerank_k8", k=8),
     "hybrid_rerank_headers_k8": replace(_HEADERS, name="hybrid_rerank_headers_k8", k=8),
+    # Post-hoc MaxP rows: only one runs, with headers only if hybrid_rerank_headers beats
+    # hybrid_rerank by the best-row rule.
+    "hybrid_rerank_maxp": _MAXP,
+    "hybrid_rerank_headers_maxp": _HEADERS_MAXP,
+    "hybrid_rerank_maxp_k8": replace(_MAXP, name="hybrid_rerank_maxp_k8", k=8),
+    "hybrid_rerank_headers_maxp_k8": replace(
+        _HEADERS_MAXP, name="hybrid_rerank_headers_maxp_k8", k=8
+    ),
+    "baseline_k8": RunConfig(name="baseline_k8", k=8),
 }
 
 
