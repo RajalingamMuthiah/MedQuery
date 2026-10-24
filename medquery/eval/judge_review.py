@@ -588,12 +588,17 @@ class LabelError(Exception):
 
 
 def freeze_labels(
-    labeller: str, version: str = REVIEW_VERSION, root: Path = GOLDEN_DIR, revision: str = ""
+    labeller: str,
+    version: str = REVIEW_VERSION,
+    root: Path = GOLDEN_DIR,
+    revision: str = "",
+    reason: str = "",
 ) -> dict:
     """Join hand labels (CSV) with the hidden judge verdicts (key) and freeze them.
 
     A revision (r2, ...) is a corrected label set frozen next to the earlier ones, which are
-    never changed; its meta names the set it supersedes and the rows that changed."""
+    never changed; its meta names the set it supersedes, the rows that changed and, if given,
+    why they were re-checked (e.g. prompted by a judge disagreement, a possible bias)."""
     import csv
     import hashlib
     from datetime import date
@@ -671,6 +676,8 @@ def freeze_labels(
             "file": review_paths(version, root, earlier)["labels"].name,
             "sha256": old_meta["sha256"],
         }
+        if reason:
+            meta["revision_reason"] = reason
         meta["changed_rows"] = [
             x["row_id"]
             for x in labels

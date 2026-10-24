@@ -761,7 +761,11 @@ def test_revision_records_what_it_supersedes_and_changed_rows(tmp_path):
         writer = _csv.DictWriter(f, fieldnames=COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
-    r2 = freeze_labels("x", version="t", root=tmp_path, revision="r2")
+    r2 = freeze_labels(
+        "x", version="t", root=tmp_path, revision="r2", reason="prompted by a judge disagreement"
+    )
+    assert r2["revision_reason"] == "prompted by a judge disagreement"
+    assert "revision_reason" not in v1
     assert r2["supersedes"] == {
         "revision": "v1",
         "file": "judge_review_t.labels.jsonl",

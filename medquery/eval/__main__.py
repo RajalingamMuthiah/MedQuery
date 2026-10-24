@@ -505,9 +505,11 @@ def print_agreement(block: dict, labels: list[dict], judge_name: str) -> None:
         print(f"      note: {x['notes'] or '(none)'}")
 
 
-def cmd_judge_review_freeze(labeller: str, revision: str, version: str = REVIEW_VERSION) -> int:
+def cmd_judge_review_freeze(
+    labeller: str, revision: str, version: str = REVIEW_VERSION, reason: str = ""
+) -> int:
     try:
-        meta = freeze_labels(labeller, version=version, revision=revision)
+        meta = freeze_labels(labeller, version=version, revision=revision, reason=reason)
     except LabelError as exc:
         print(f"freeze refused: {exc}")
         return 1
@@ -525,6 +527,8 @@ def cmd_judge_review_freeze(labeller: str, revision: str, version: str = REVIEW_
             f"supersedes {meta['supersedes']['file']} ({meta['supersedes']['sha256'][:12]}); "
             f"changed rows: {meta['changed_rows']}"
         )
+        if meta.get("revision_reason"):
+            print(f"re-check reason: {meta['revision_reason']}")
     block = agreement_block(labels, meta["judge_prompt"], meta["judge_model"], meta)
     print_agreement(block, labels, meta["judge_prompt"])
     return 0
@@ -642,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:
     jr_freeze = jr.add_parser("freeze", help="freeze hand labels and report agreement")
     jr_freeze.add_argument("--labeller", required=True, help="who labelled, recorded in meta")
     jr_freeze.add_argument("--version", default=REVIEW_VERSION)
+    jr_freeze.add_argument("--reason", default="", help="why a revision's rows were re-checked")
     jr_freeze.add_argument(
         "--revision",
         default="",
@@ -659,7 +664,7 @@ def main(argv: list[str] | None = None) -> int:
     jr_stab.add_argument("--seeds", type=int, nargs="+", default=[0, 1])
     args = parser.parse_args(argv)
     if args.group == "judge-review" and args.action == "freeze":
-        return cmd_judge_review_freeze(args.labeller, args.revision, args.version)
+        return cmd_judge_review_freeze(args.labeller, args.revision, args.version, args.reason)
     if args.group == "judge-review" and args.action == "measure":
         return cmd_judge_review_measure(args.judge, args.model, args.seed, args.version)
     if args.group == "judge-review" and args.action == "stability":
