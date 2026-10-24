@@ -1,0 +1,18 @@
+metric,value,ci_low,ci_high,over,definition
+answer_correctness,0.9558823529411765,0.8918602195945946,1.0,answerable,"judge vs reference: correct 1, partial 0.5, incorrect 0; abstained = 0"
+faithfulness,0.9123376623376623,0.8364250135538087,0.9765745007680492,answered,"per answer, claims supported by retrieved passages / claims; mean"
+hallucination_rate,0.1125,0.03333333333333333,0.20655350084697907,answered,"unsupported claims / all claims, pooled"
+answer_relevancy,0.9924242424242424,0.9736842105263158,1.0,answered,judge rating 1-5 scaled to 0-1
+context_precision,0.5990196078431372,0.45447291041041044,0.723813244047619,answerable,rank-aware AP@k over the generator's passages; relevant = maps to a gold quote
+context_recall,0.7794117647058824,0.6323529411764706,0.9,answerable,gold evidence items covered by the generator's passages
+recall@1,0.4411764705882353,0.2878787878787879,0.5972916666666666,answerable,gold chunks in the top 1 / gold
+recall@3,0.6764705882352942,0.5138465447154471,0.8125,answerable,gold chunks in the top 3 / gold
+recall@5,0.7794117647058824,0.6323529411764706,0.9,answerable,gold chunks in the top 5 / gold
+recall@10,0.8970588235294118,0.7894338118022329,0.9857142857142858,answerable,gold chunks in the top 10 / gold
+mrr,0.6336134453781513,0.49367034233048057,0.7540911989795918,answerable,1 / rank of the first gold chunk in the top 10
+citation_accuracy,0.8533333333333334,0.75,0.9508395029085139,answered,"cited claims whose cited passages support them / cited claims, pooled"
+citation_validity,1.0,1.0,1.0,answered,citations naming a passage given to the generator / citations
+uncited_claim_share,0.0625,0.0,0.14634146341463414,answered,claims with no citation
+abstention_accuracy,0.9772727272727273,0.9318181818181818,1.0,all,"abstain on unanswerable, answer on answerable"
+abstention_recall,1.0,1.0,1.0,unanswerable,unanswerable questions where the system abstained
+false_abstention_rate,0.029411764705882353,0.0,0.08823529411764706,answerable,answerable questions where the system abstained
