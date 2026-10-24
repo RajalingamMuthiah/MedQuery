@@ -1,7 +1,7 @@
 # MedQuery failure diagnosis: run `a14cd47892bd` (`hybrid_rerank_headers_maxp`, dev)
 
-- Created (UTC): 2026-10-24 08:18
-- Git commit: `e803080bb4dfd1abd0e7ff5b3cc1dd6809c9e4b1` (clean working tree)
+- Created (UTC): 2026-10-24 11:08
+- Git commit: `d79532e0fd8340279898c42d400c8226a0e9b2cb` (clean working tree)
 - Causes: hand-assigned in `medquery/eval/diagnosis/phase4_causes.csv`; the findings come from the run's judge verdicts. No API calls.
 
 ## Findings by cause
@@ -41,10 +41,11 @@
 | chunks | 1133 |
 | table chunks | 207 |
 | no caption | 137 |
-| caption cut mid sentence | 66 |
+| caption cut mid sentence | 5 |
 | continuation without caption or header | 50 |
-| multi row header | 93 |
+| multi row header | 29 |
 | all empty columns | 83 |
 | split decimals | 8 |
+| over 480 words | 8 |
 
 Continuation = a captionless table on the page after a table of the same document with the same number of columns. The table_v2 fix targets every row of this table.
