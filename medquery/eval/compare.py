@@ -217,6 +217,7 @@ def ablation_markdown(
     row_notes: dict[str, str] | None = None,
     extra_lines: list[str] | None = None,
     reparse: bool = False,
+    appendix: list[str] | None = None,
 ) -> tuple[str, list[dict]]:
     """row_notes: per-config note for the configs table (e.g. how an offline row was made);
     extra_lines: added to the header list (e.g. the Phase 4 budget); reparse: re-parse
@@ -435,6 +436,7 @@ def ablation_markdown(
         "Retrieval latency is measured live (query embedding, BM25, fusion, rerank); "
         "generation latency is the original API call's, from the cache."
     )
+    lines += appendix or []
     return "\n".join(lines) + "\n", csv_rows
 
 
@@ -594,3 +596,59 @@ def write_provider_check(pairs, split, git, golden_meta, chunks_sha, out_dir: Pa
         with atomic_write(path) as f:
             f.write(text)
     return out, any_real
+
+
+PRIMARY_METRICS = (
+    "answer_correctness",
+    "false_abstention_rate",
+    "abstention_recall",
+    "context_recall",
+    "recall@5",
+    "recall@10",
+    "mrr",
+)
+
+
+def provider_check_section(csv_path: Path) -> list[str]:
+    """Summary of a committed provider-check report, from its CSV: how many paired tests, which
+    were real, and whether the primary metrics changed."""
+    import csv
+
+    with csv_path.open(encoding="utf-8", newline="") as f:
+        rows = [r for r in csv.DictReader(f) if r["ci_low"] not in ("", "None")]
+    real = [r for r in rows if float(r["ci_low"]) > 0 or float(r["ci_high"]) < 0]
+    primary_real = [r for r in real if r["metric"] in PRIMARY_METRICS]
+    lines = [
+        "",
+        "## Provider check (Groq vs NVIDIA)",
+        "",
+        f"From `{csv_path.stem}.md`: {len(rows)} paired tests (same retrieval, generator on Groq "
+        f"vs NVIDIA). At 95% confidence about {len(rows) * 0.05:.1f} would look real by chance "
+        "alone.",
+        "",
+    ]
+    for r in real:
+        direction = (
+            "favours NVIDIA"
+            if (float(r["diff"]) > 0) != (r["metric"] in LOWER_IS_BETTER | {"hallucination_rate"})
+            else "favours Groq"
+        )
+        lines.append(
+            f"- Real: `{r['config']}` {r['metric']} {float(r['diff']):+.3f}, 95% CI "
+            f"[{float(r['ci_low']):.4f}, {float(r['ci_high']):.3f}] ({direction}); expected by "
+            f"chance across {len(rows)} paired tests."
+        )
+    lines.append(
+        "- Primary metrics (answer correctness, false-abstention rate, abstention recall, "
+        "retrieval): "
+        + (
+            "unchanged on every row."
+            if not primary_real
+            else f"{len(primary_real)} real difference(s)."
+        )
+    )
+    lines.append(
+        "- Decision (user, 2026-10-24): the switch is treated as neutral, and the Phase 4 rows "
+        "run on NVIDIA."
+    )
+    return lines

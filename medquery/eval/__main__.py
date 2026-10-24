@@ -542,7 +542,7 @@ def cmd_provider_check(config_names: list[str]) -> int:
     return 0
 
 
-def cmd_ablation(split: str, config_names: list[str]) -> int:
+def cmd_ablation(split: str, config_names: list[str], provider_check: str = "") -> int:
     """Ablation report over completed runs of the given configs (dev only, clean tree)."""
     if split != "dev":
         print("refused: Phase 3 ablations use the dev split only")
@@ -575,6 +575,11 @@ def cmd_ablation(split: str, config_names: list[str]) -> int:
         row_cfg = replace(cfg, name=f"{cfg.name}_abstain")
         runs.insert(index + 1, (row_cfg, f"{rid}+abstain", derived))
         options.setdefault("row_notes", {})[row_cfg.name] = note
+    if provider_check:
+        from medquery.eval.compare import provider_check_section
+        from medquery.eval.report import REPORTS_DIR
+
+        options["appendix"] = provider_check_section(REPORTS_DIR / f"{provider_check}.csv")
     for path in write_ablation(runs, split, git, golden_meta, chunks_sha, **options):
         print(f"wrote {path.relative_to(paths.ROOT)}")
     return 0
@@ -804,6 +809,7 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="config names; '<name>+abstain' adds the offline abstention row after <name>",
     )
+    abl.add_argument("--provider-check", default="", help="provider-check report stem to summarise")
     rc = sub.add_parser("risk-coverage", help="abstention by retrieval confidence (offline)")
     rc.add_argument("--run", required=True, help="run id (data/eval_runs/<id>)")
     dg = sub.add_parser("diagnose", help="failure diagnosis of a completed dev run")
@@ -844,7 +850,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.group == "judge-sample":
         return cmd_judge_sample(args.run, args.version, args.exclude_labelled)
     if args.group == "ablation":
-        return cmd_ablation(args.split, args.configs)
+        return cmd_ablation(args.split, args.configs, args.provider_check)
     if args.group == "risk-coverage":
         return cmd_risk_coverage(args.run)
     if args.group == "diagnose":

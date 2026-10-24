@@ -192,3 +192,19 @@ def test_provider_check_cli_needs_a_clean_tree(monkeypatch, capsys):
     monkeypatch.setattr(cli, "git_state", lambda: {"commit": "x", "dirty": True})
     assert cli.main(["provider-check", "--configs", "hybrid"]) == 1
     assert "clean, committed" in capsys.readouterr().out
+
+
+def test_provider_check_section_reports_real_differences_and_primary_metrics(tmp_path):
+    from medquery.eval.compare import provider_check_section
+
+    path = tmp_path / "pc.csv"
+    path.write_text(
+        "config,metric,groq,nvidia,diff,ci_low,ci_high\n"
+        "hybrid,answer_correctness,0.9,0.9,0.0,0.0,0.0\n"
+        "hybrid,faithfulness,0.91,0.93,0.016,0.0003,0.036\n"
+        "hybrid,hallucination_rate,0.1,0.08,-0.02,-0.05,0.01\n",
+        encoding="utf-8",
+    )
+    text = "\n".join(provider_check_section(path))
+    assert "3 paired tests" in text and "faithfulness +0.016" in text
+    assert "(favours NVIDIA)" in text and "unchanged on every row" in text
