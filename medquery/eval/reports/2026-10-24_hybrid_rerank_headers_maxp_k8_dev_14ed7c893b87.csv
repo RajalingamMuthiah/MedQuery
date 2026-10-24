@@ -1,0 +1,18 @@
+metric,value,ci_low,ci_high,over,definition
+answer_correctness,0.9264705882352942,0.8377252252252253,1.0,answerable,"judge vs reference: correct 1, partial 0.5, incorrect 0; abstained = 0"
+faithfulness,0.946969696969697,0.8711910774410775,1.0,answered,"per answer, claims supported by retrieved passages / claims; mean"
+hallucination_rate,0.038461538461538464,0.0,0.08977272727272724,answered,"unsupported claims / all claims, pooled"
+answer_relevancy,0.9924242424242424,0.9765435987903226,1.0,answered,judge rating 1-5 scaled to 0-1
+context_precision,0.6362745098039215,0.523982843137255,0.7449172008547008,answerable,rank-aware AP@k over the generator's passages; relevant = maps to a gold quote
+context_recall,0.9264705882352942,0.8382352941176471,1.0,answerable,gold evidence items covered by the generator's passages
+recall@1,0.4117647058823529,0.2638706140350877,0.5571848739495798,answerable,gold chunks in the top 1 / gold
+recall@3,0.8088235294117647,0.6818181818181818,0.921875,answerable,gold chunks in the top 3 / gold
+recall@5,0.8970588235294118,0.7972867398648649,0.9736842105263158,answerable,gold chunks in the top 5 / gold
+recall@10,0.9411764705882353,0.8529411764705882,1.0,answerable,gold chunks in the top 10 / gold
+mrr,0.6602941176470588,0.5424272328548645,0.7699098671726754,answerable,1 / rank of the first gold chunk in the top 10
+citation_accuracy,0.7397260273972602,0.5802293771043772,0.8901174168297455,answered,"cited claims whose cited passages support them / cited claims, pooled"
+citation_validity,0.9047619047619048,0.7646671826625386,1.0,answered,citations naming a passage given to the generator / citations
+uncited_claim_share,0.0641025641025641,0.01314946018893388,0.13847222222222222,answered,claims with no citation
+abstention_accuracy,0.9772727272727273,0.9318181818181818,1.0,all,"abstain on unanswerable, answer on answerable"
+abstention_recall,1.0,1.0,1.0,unanswerable,unanswerable questions where the system abstained
+false_abstention_rate,0.029411764705882353,0.0,0.08823529411764706,answerable,answerable questions where the system abstained
