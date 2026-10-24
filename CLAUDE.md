@@ -91,6 +91,11 @@ Short chunks (under 30 words) are below the user's 8% threshold. The current rat
   - On r2, gpt-6.1-sol/judge_v2: claims 0.720 (kappa 0.390); wrongly rejected 7 of 21 (v1 labels: 0.680, 8 of 22). judge_v1 stays.
   - The judge is stricter than the labeller, so faithfulness and hallucination rate are pessimistic (README limitations).
 - **Phase 4** followed (see below). **Next:** Phase 5, claim verification (brief to come); the final test-split runs happen once, at the end of Phase 5.
+**Phase 5 (claim verification, then final test-split results): in progress** (plan approved 2026-10-24; brief `docs/brief/phase5-prompt.md`).
+- **Verifier (user choice):** the generator model `openai/gpt-oss-20b` with prompt `verify_v1` (never the judge model). One call per answered question classifies each sentence as fact or note and checks its atomic claims against the 5 passages; a fact sentence with any unsupported claim is removed; no surviving fact sentence means abstention. Config `live_verify` = live config + verifier.
+- **Adoption rule (fixed before the dev run):** adopt only if answer correctness and false-abstention rate are not really worse, hallucination rate is not really worse, and its point estimate falls.
+- **Test split (user choice):** baseline, hybrid, live, and live + verifier if adopted, all with the generator on NVIDIA, each run once from a clean commit; `run --split test` refuses a config whose test run is complete; the final table needs `ablation --split test --final`.
+- **Budget:** per phase ($3); Phase 4 runs are listed by id in `medquery/eval/budget.py`, every other NVIDIA run counts toward Phase 5.
 **Phase 4 (generation quality and the live config): done and approved (2026-10-24)** (brief `docs/brief/phase4-prompt.md`).
 - **Live config (user decision, 2026-10-24):** hybrid retrieval + title/section headers + corpus v2 + `answer_v2`, no reranker (config `hybrid_headers_tables_answer_v2`). Generation is served on Groq for latency and evaluated on NVIDIA.
 - **Why answer_v2:** of the 3 answers it lost, g078 declined arithmetic that no passage states (the desired grounded behaviour), g081 rests on an ambiguous question ("primary driver"), and only g012 is a true regression. Meanwhile hallucination halved (0.114 -> 0.057) and citation accuracy rose (0.865 -> 0.910).
