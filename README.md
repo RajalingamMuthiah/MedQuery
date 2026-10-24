@@ -10,7 +10,7 @@ Requires [uv](https://docs.astral.sh/uv/) and [Tesseract OCR](https://github.com
 
 ```powershell
 uv sync
-Copy-Item .env.example .env   # then add GROQ_API_KEY (generator) and OPENAI_API_KEY (judge)
+Copy-Item .env.example .env   # then add GROQ_API_KEY and NVIDIA_API_KEY (generator) and OPENAI_API_KEY (judge)
 uv run pytest
 ```
 
@@ -114,6 +114,61 @@ A second sample, `judge_review_v2`, was drawn from the best dev run: 25 claims a
 - **Label revision r2 changes one row, r031,** from supported to unsupported: the passage's "0.7 (0.4–1.0)" is in millions, not a percentage. The re-check was prompted by a judge disagreement, and only disputed rows were re-checked, so r2 may be biased toward the judge. Both label sets are kept and both are reported.
 - From `medquery/eval/golden/judge_review_v2.measure_<judge>_gpt-6.1-sol_<r2|v1>.json` (`uv run python -m medquery.eval judge-review measure --version v2 --judge <judge_v1|judge_v2>` measures the latest labels). judge_v2's fresh validation is worse than judge_v1 on either label set, so judge_v1 stays.
 
+### Generation quality and the live config (Phase 4, dev only)
+The generator moved to NVIDIA NIM (same model, `openai/gpt-oss-20b`) for evaluation. Every number below is copied from four reports produced from clean commits:
+- [provider check](medquery/eval/reports/2026-10-24_provider_check_dev_6e6b357b58.md);
+- [failure diagnosis](medquery/eval/reports/2026-10-24_diagnosis_dev_a14cd47892bd.md);
+- [risk–coverage](medquery/eval/reports/2026-10-24_risk_coverage_dev_53088e55be95.md);
+- [Phase 4 ablation](medquery/eval/reports/2026-10-24_ablation_dev_0565b682a4.md).
+
+**Provider check (Groq vs NVIDIA, same retrieval).** 24 paired tests (2 rows × 12 metrics). One was "real": faithfulness on `hybrid_rerank_headers_maxp`, +0.016 on NVIDIA with 95% CI [0.0003, 0.036]. That is expected by chance across 24 paired tests (about 1.2 at 95%), and it favours NVIDIA. All primary metrics are unchanged on both rows: answer correctness, false abstention, abstention recall and retrieval. The switch is treated as neutral. NVIDIA's free tier is slow, though: generation p50 / p95 is 12.1 s / 58.1 s on `hybrid`, against 0.72 s / 1.12 s on Groq.
+
+**Diagnosis of the best Phase 3 run** (`a14cd47892bd`): 1 incorrect answer and 13 unsupported claims across 6 answers, plus 1 false abstention.
+
+| Cause (hand-assigned, committed CSV) | Findings |
+|---|---|
+| table/units misread (g018: 0.7 million read as 0.7%) | 2 |
+| detail not in the passages (g092) | 6 |
+| citation pointing to the wrong passage | 1 |
+| number/qualifier near-miss | 1 |
+| multi-passage synthesis | 1 |
+| paraphrase beyond the passage | 1 |
+| retrieval: gold not in the top 10 | 1 |
+
+**Table fix (corpus v2).** Tables only; v1 is untouched.
+
+| Table chunks | Corpus v1 | Corpus v2 |
+|---|---|---|
+| table chunks | 207 | 219 |
+| continuation without caption or header | 50 | 0 |
+| caption cut mid-sentence | 5 | 0 |
+| header rows above numeric data (not merged) | 29 | 15 |
+| all-empty columns | 83 | 0 |
+| split decimals ("26 .8") | 8 | 0 |
+
+The fix completes wrapped captions, gives continuation pages their caption and header, merges multi-row headers so each column carries its unit ("Undiagnosed diabetes Number in Millions (95% CI)"), drops empty columns and rejoins split decimals.
+
+The gate passed: the 926 prose chunks are identical to v1, and all 71 gold evidence quotes map exactly to chunks on the same pages.
+
+**Cumulative rows (generator on NVIDIA).**
+
+| Row | Change | Answer correctness | False-abstention rate | Hallucination rate | Citation accuracy | End-to-end p50 / p95 |
+|---|---|---|---|---|---|---|
+| `hybrid_nvidia` | hybrid (Phase 3 row 2) | 0.912 [0.828, 0.985] | 0.059 [0.000, 0.143] | 0.059 [0.013, 0.125] | 0.873 | 12.2 s / 58.1 s |
+| `hybrid_headers` | + title/section headers, no reranker | 0.956 [0.892, 1.000] | 0.029 [0.000, 0.088] | 0.113 [0.033, 0.207] | 0.853 | 12.5 s / 77.5 s |
+| `hybrid_headers_tables` | + corpus v2 (table fix) | 0.956 [0.892, 1.000] | 0.029 [0.000, 0.088] | 0.114 [0.029, 0.211] | 0.865 | 10.2 s / 55.5 s |
+| `hybrid_headers_tables_answer_v2` | + `answer_v2` prompt | 0.882 [0.781, 0.973] | 0.059 [0.000, 0.139] | 0.057 [0.014, 0.112] | 0.910 | 9.8 s / 64.9 s |
+| `…_answer_v2_abstain` | + abstention by retrieval confidence (offline) | 0.882 [0.781, 0.973] | 0.059 [0.000, 0.139] | 0.057 [0.014, 0.112] | 0.910 | 9.8 s / 64.9 s |
+
+- **No paired difference in Phase 4 is real** (each row against the previous one; 1,000 resamples, seed 0).
+- **answer_v2:** answer correctness −0.074 [−0.162, 0.000] and hallucination rate −0.057 [−0.160, 0.025]. It trades three answers for fewer unsupported claims (per-item answers are in the runs' committed `_items.csv` reports):
+  - g012: it missed a fact that was in its passages;
+  - g078: it declined to compute "120 doses", which no passage states;
+  - g081: it named the wrong risk factor.
+- **The table fix** changes no metric. Its target error, g018, is already answered correctly once headers are on, because Table 1a then ranks first.
+- **Abstention by retrieval confidence:** the operating-point rule (maximise the overall dev score; signal = top-1 dense cosine) chose **no threshold**. The generator already declines every unanswerable dev question (abstention recall 1.000), so any threshold only removes correct answers. The leave-one-out estimate agrees (overall 0.909, no threshold chosen in any of the 44 folds).
+- **End-to-end latency** here is dominated by NVIDIA's free-tier queue. Retrieval without the reranker takes 13–21 ms at the median.
+
 ### Metric definitions
 Every quality metric has a 95% percentile bootstrap CI: 1,000 resamples over questions, seed 0. "Judge" means OpenAI `gpt-6.1-sol` with prompt `judge_v1`, used as an LLM judge (one call per answered question). Claim support is decided only from the retrieved passages, and the reference answer is used only for correctness.
 
@@ -152,5 +207,7 @@ Gold evidence is stored as (document, page, quote), never as chunk ids. Each quo
 - **Hand labels were corrected after seeing the judge's agreement report.** In both samples, revision r2 changed rows re-checked after the agreement report was shown: 4 rows in the first sample, and in the second only r031, whose re-check was prompted by a judge disagreement. Rows where labeller and judge agreed were not re-checked in the same way, so such corrections tend to move agreement toward the judge. The first label sets are kept, and both are reported.
 - **Table chunks can lose their units.** r031's claim misread a value from a table whose "Number in millions" header did not reach the passage, so the generator reported 0.7 million as 0.7%. Table headers and units are a Phase 4 target.
 - **The reranker is slow on CPU.** bge-reranker-base via ONNX on CPU adds about 10–20 s per query (20 s with MaxP windows). A GPU or a smaller reranker would be needed before it is worth using live, and on dev it gave no measurable accuracy gain.
+- **Evaluation and the live app use different generator providers.** From Phase 4, evaluation generates on NVIDIA NIM's free tier (12–16 s median per answer); the provider check found no change in the primary metrics against Groq, which the live app will use for speed.
+- **Phase 4 changes were not measurably better on 44 dev questions.** Headers, the table fix, answer_v2 and confidence-based abstention all have paired CIs that include 0. Small effects would need a larger dev set to detect.
 - **Small samples.** 44 dev and 23 test questions give wide confidence intervals. Differences between configurations smaller than the CIs shouldn't be read as real.
 - **Small, US-focused corpus.** It has three topics and ten documents, mostly from US federal agencies.
