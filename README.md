@@ -169,6 +169,16 @@ The gate passed: the 926 prose chunks are identical to v1, and all 71 gold evide
 - **Abstention by retrieval confidence:** the operating-point rule (maximise the overall dev score; signal = top-1 dense cosine) chose **no threshold**. The generator already declines every unanswerable dev question (abstention recall 1.000), so any threshold only removes correct answers. The leave-one-out estimate agrees (overall 0.909, no threshold chosen in any of the 44 folds).
 - **End-to-end latency** here is dominated by NVIDIA's free-tier queue. Retrieval without the reranker takes 13–21 ms at the median.
 
+**Live config (decided after Phase 4):** hybrid retrieval + title/section headers + corpus v2 + `answer_v2`, with no reranker. Generation is served on Groq for latency; evaluation runs on NVIDIA.
+
+Why `answer_v2` despite the 3 lost answers:
+- g078 declined arithmetic that no passage states, which is the grounded behaviour wanted;
+- g081 rests on an ambiguous question ("primary driver");
+- only g012 is a true regression;
+- meanwhile hallucination halved (0.114 → 0.057) and citation accuracy rose (0.865 → 0.910).
+
+The prompt is not tuned further on dev, to avoid overfitting; Phase 5's claim verification targets the remaining errors.
+
 ### Metric definitions
 Every quality metric has a 95% percentile bootstrap CI: 1,000 resamples over questions, seed 0. "Judge" means OpenAI `gpt-6.1-sol` with prompt `judge_v1`, used as an LLM judge (one call per answered question). Claim support is decided only from the retrieved passages, and the reference answer is used only for correctness.
 
