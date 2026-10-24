@@ -6,6 +6,7 @@ import json
 import math
 import sys
 from collections import Counter
+from dataclasses import replace
 
 from medquery import config, paths
 from medquery.eval import budget
@@ -62,7 +63,15 @@ from medquery.eval.judge_review import SEED as SAMPLE_SEED
 from medquery.eval.judge_review import _key as judge_review_key
 from medquery.eval.judge_review import review_rows as judge_review_rows
 from medquery.eval.report import write_report
-from medquery.eval.runner import CONFIGS, RUNS_DIR, build_retriever, load_records, run, run_id
+from medquery.eval.runner import (
+    CONFIGS,
+    RUNS_DIR,
+    RunConfig,
+    build_retriever,
+    load_records,
+    run,
+    run_id,
+)
 from medquery.eval.usage import format_summary, summarize
 from medquery.fileio import LockHeld, atomic_write, exclusive_lock
 from medquery.ingest.manifest import load_manifest
@@ -542,12 +551,77 @@ def cmd_ablation(split: str, config_names: list[str]) -> int:
     if git["dirty"] is not False:
         print("refused: ablation reports need a clean, committed git tree")
         return 1
-    loaded = _completed_runs(split, config_names)
+    abstain_rows = [n for n in config_names if n.endswith("+abstain")]
+    loaded = _completed_runs(split, [n for n in config_names if not n.endswith("+abstain")])
     if loaded is None:
         return 1
     runs, golden_meta, chunks_sha = loaded
-    for path in write_ablation(runs, split, git, golden_meta, chunks_sha):
+    options: dict = {}
+    if any(budget.is_phase4({"generator_provider": cfg.generator_provider}) for cfg, _, _ in runs):
+        options = {
+            "title": "generation quality and the live config (Phase 4)",
+            "reparse": True,
+            "extra_lines": [
+                f"Phase 4 judge spend so far (all Phase 4 runs): ${budget.spent(RUNS_DIR):.2f} "
+                f"of the ${budget.PHASE4_CAP_USD:.2f} cap"
+            ],
+            "row_notes": {},
+        }
+    for name in abstain_rows:  # offline row: the named run's records with the threshold applied
+        base = name.removesuffix("+abstain")
+        index = next(i for i, (cfg, _, _) in enumerate(runs) if cfg.name == base)
+        cfg, rid, records = runs[index]
+        derived, note = _abstain_row(cfg, records)
+        row_cfg = replace(cfg, name=f"{cfg.name}_abstain")
+        runs.insert(index + 1, (row_cfg, f"{rid}+abstain", derived))
+        options.setdefault("row_notes", {})[row_cfg.name] = note
+    for path in write_ablation(runs, split, git, golden_meta, chunks_sha, **options):
         print(f"wrote {path.relative_to(paths.ROOT)}")
+    return 0
+
+
+def _abstain_scores(cfg, records):
+    from medquery.eval import abstain
+    from medquery.retrieval.pipeline import index_text
+
+    chunks = {c["id"]: c for c in load_chunks(chunks_path(cfg.corpus), include_quiz=True)}
+    return abstain.confidence(
+        records, chunks, FastEmbedder(cfg.embed_model), lambda c: index_text(c, cfg.headers)
+    )
+
+
+def _abstain_row(cfg, records):
+    """(records with the operating-point threshold applied, a note for the configs table)."""
+    from medquery.eval import abstain
+
+    scores = _abstain_scores(cfg, records)
+    t = abstain.operating_point(records, scores)
+    loo = abstain.leave_one_out(records, scores)
+    derived = abstain.apply(records, scores, t)
+    turned = sum(r.get("abstained_by_threshold", False) for r in derived)
+    note = (
+        f"offline, no new calls: answers with top-1 dense cosine < {t:.4f} abstain "
+        f"({turned} answers turned into abstentions). Threshold chosen in-sample on dev, so "
+        f"optimistic; leave-one-out overall score {loo['overall']:.3f} vs in-sample "
+        f"{abstain.overall(derived):.3f} (base row {abstain.overall(records):.3f})"
+    )
+    return derived, note
+
+
+def cmd_risk_coverage(run: str) -> int:
+    """Risk-coverage curve and operating point for a completed run (offline)."""
+    from medquery.eval import abstain
+
+    git = git_state()
+    if git["dirty"] is not False:
+        print("refused: risk-coverage reports need a clean, committed git tree")
+        return 1
+    records = sorted(load_records(RUNS_DIR / run / "items.jsonl"), key=lambda r: r["id"])
+    run_config = json.loads((RUNS_DIR / run / "run.json").read_text(encoding="utf-8"))
+    cfg = replace(RunConfig(), **run_config["config"])
+    scores = _abstain_scores(cfg, records)
+    path = abstain.write_report(run, cfg.name, records, scores, git)
+    print(f"wrote {path.relative_to(paths.ROOT)}")
     return 0
 
 
@@ -724,7 +798,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     abl = sub.add_parser("ablation", help="paired comparison of completed dev runs")
     abl.add_argument("--split", choices=["dev", "test"], default="dev")
-    abl.add_argument("--configs", nargs="+", choices=sorted(CONFIGS), required=True)
+    abl.add_argument(
+        "--configs",
+        nargs="+",
+        required=True,
+        help="config names; '<name>+abstain' adds the offline abstention row after <name>",
+    )
+    rc = sub.add_parser("risk-coverage", help="abstention by retrieval confidence (offline)")
+    rc.add_argument("--run", required=True, help="run id (data/eval_runs/<id>)")
     dg = sub.add_parser("diagnose", help="failure diagnosis of a completed dev run")
     dg.add_argument("--run", required=True, help="run id (data/eval_runs/<id>)")
     pc = sub.add_parser("provider-check", help="Groq vs NVIDIA on completed dev runs")
@@ -764,6 +845,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_judge_sample(args.run, args.version, args.exclude_labelled)
     if args.group == "ablation":
         return cmd_ablation(args.split, args.configs)
+    if args.group == "risk-coverage":
+        return cmd_risk_coverage(args.run)
     if args.group == "diagnose":
         return cmd_diagnose(args.run)
     if args.group == "provider-check":

@@ -67,7 +67,7 @@ T1 = (
     "| Age | Number |\n|---|---|\n| | in millions |\n| 18-44 | 3 .6 |"
 )
 T1_CONT = "| 45-64 | 11.7 |\n|---|---|\n| 65+ | 11.5 |"
-T2 = "Table 2. Something that is cut\n\n| a | | b |\n|---|---|---|\n| 1 | | 2 |"
+T2 = "Table 2. Something that is cut among\n\n| a | | b |\n|---|---|---|\n| 1 | | 2 |"
 
 
 def test_table_stats_count_each_problem():
@@ -87,7 +87,7 @@ def test_table_stats_count_each_problem():
     s = table_stats(chunks)
     assert s["table_chunks"] == 3 and s["chunks"] == 4
     assert s["no_caption"] == 1  # the continuation
-    assert s["caption_cut_mid_sentence"] == 2  # neither caption ends with . : or )
+    assert s["caption_cut_mid_sentence"] == 1  # T2 ends on "among"
     assert s["continuation_without_caption_or_header"] == 1
     assert s["multi_row_header"] == 1 and s["all_empty_columns"] == 1 and s["split_decimals"] == 1
     assert caption(T1) == "Table 1. Counts by age, in millions" and caption(T1_CONT) == ""

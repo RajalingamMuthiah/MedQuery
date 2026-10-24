@@ -213,26 +213,46 @@ def ablation_markdown(
     golden_meta: dict,
     chunks_sha: str,
     created: str,
+    title: str = "retrieval upgrades",
+    row_notes: dict[str, str] | None = None,
+    extra_lines: list[str] | None = None,
+    reparse: bool = False,
 ) -> tuple[str, list[dict]]:
+    """row_notes: per-config note for the configs table (e.g. how an offline row was made);
+    extra_lines: added to the header list (e.g. the Phase 4 budget); reparse: re-parse
+    citations from the stored answers for every row and report citation validity."""
+    row_notes = row_notes or {}
+    summary = SUMMARY
+    if reparse:
+        runs = [(cfg, rid, reparse_citations(records)) for cfg, rid, records in runs]
+        summary = [*SUMMARY, ("citation_validity", metrics.citation_validity)]
     dirty = "unknown" if git["dirty"] is None else ("DIRTY" if git["dirty"] else "clean")
+    prompts = sorted({cfg.answer_prompt for cfg, _, _ in runs})
     lines = [
-        f"# MedQuery ablation: retrieval upgrades on the **{split}** split",
+        f"# MedQuery ablation: {title} on the **{split}** split",
         "",
         f"- Created (UTC): {created}",
         f"- Git commit: `{git['commit']}` ({dirty} working tree)",
         f"- Golden set: `{golden_meta['version']}` sha256 `{golden_meta['sha256']}`; corpus "
-        f"`chunks.jsonl` sha256 `{chunks_sha}`",
-        f"- Fixed across rows: generator `{runs[0][0].generator}` with "
-        f"`{runs[0][0].answer_prompt}`, judge `{runs[0][0].judge}` with "
-        f"`{runs[0][0].judge_prompt}`; list prices: {settings.price_note()}",
+        f"`chunks.jsonl` sha256 {chunks_sha if ' ' in chunks_sha else f'`{chunks_sha}`'}",
+        f"- Generator `{runs[0][0].generator}`; answer prompt(s) "
+        + ", ".join(f"`{p}`" for p in prompts)
+        + f"; judge `{runs[0][0].judge}` with `{runs[0][0].judge_prompt}`; list prices: "
+        f"{settings.price_note()}",
         f"- Paired bootstrap: {N_RESAMPLES} resamples of the same question ids, seed {SEED}; "
         "a difference counts as **real** only if its 95% CI excludes 0.",
+        *[f"- {line}" for line in extra_lines or []],
+        *(
+            ["- Citations re-parsed from the stored answers with the current parser for every row."]
+            if reparse
+            else []
+        ),
         "",
         "## Configurations",
         "",
         "| row | config | run id | retriever | RRF k | reranker (licence) | rerank N "
-        "| rerank input | headers | k | note |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| rerank input | headers | k | generator provider | corpus | answer prompt | note |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for n, (cfg, rid, _) in enumerate(runs, 1):
         reranker = (
@@ -244,7 +264,9 @@ def ablation_markdown(
             f"| {n} | `{cfg.name}` | `{rid}` | {cfg.retriever} | "
             f"{cfg.fuse_k if cfg.retriever == 'hybrid' else '-'} | {reranker} | "
             f"{cfg.rerank_n if cfg.rerank_model else '-'} | {_rerank_input(cfg)} | "
-            f"{cfg.headers} | {cfg.k} | {POST_HOC.get(cfg.name, '')} |"
+            f"{cfg.headers} | {cfg.k} | {cfg.generator_provider} | {cfg.corpus} | "
+            f"`{cfg.answer_prompt.split(':')[0]}` | "
+            f"{row_notes.get(cfg.name, POST_HOC.get(cfg.name, ''))} |"
         )
 
     csv_rows: list[dict] = []
@@ -252,12 +274,12 @@ def ablation_markdown(
         "",
         "## Metrics (95% bootstrap CI)",
         "",
-        "| config | " + " | ".join(name for name, _ in SUMMARY) + " |",
-        "|---|" + "---|" * len(SUMMARY),
+        "| config | " + " | ".join(name for name, _ in summary) + " |",
+        "|---|" + "---|" * len(summary),
     ]
     for cfg, _, records in runs:
         cells = []
-        for name, fn in SUMMARY:
+        for name, fn in summary:
             value, low, high = bootstrap_ci(records, fn)
             cells.append(f"{_fmt(value)} {_ci(low, high)}")
             csv_rows.append(
@@ -416,15 +438,18 @@ def ablation_markdown(
     return "\n".join(lines) + "\n", csv_rows
 
 
-def write_ablation(runs, split, git, golden_meta, chunks_sha, out_dir: Path = REPORTS_DIR):
+def write_ablation(
+    runs, split, git, golden_meta, chunks_sha, out_dir: Path = REPORTS_DIR, **options
+):
+    """options: title, row_notes, extra_lines, reparse (see ablation_markdown)."""
     import csv
     import hashlib
     import io
 
     if split != "dev":
-        raise ValueError("Phase 3 ablations run on the dev split only")
+        raise ValueError("ablations run on the dev split only")
     created = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-    md, csv_rows = ablation_markdown(runs, split, git, golden_meta, chunks_sha, created)
+    md, csv_rows = ablation_markdown(runs, split, git, golden_meta, chunks_sha, created, **options)
     key = hashlib.sha256("|".join(rid for _, rid, _ in runs).encode()).hexdigest()[:10]
     stem = f"{created[:10]}_ablation_{split}_{key}"
     buffer = io.StringIO()

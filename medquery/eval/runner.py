@@ -14,6 +14,7 @@ from medquery.eval.judge import JUDGE_VERSION, JudgeFailed, judge, prompt_id
 from medquery.fileio import atomic_write, atomic_write_bytes, exclusive_lock
 from medquery.generation.answer import answer_from_hits
 from medquery.generation.prompts import ANSWER_HASH, ANSWER_VERSION
+from medquery.generation.prompts import prompt_id as answer_prompt_id
 from medquery.llm.base import LLM, Completion
 from medquery.retrieval.dense import Retriever
 from medquery.retrieval.fusion import RRF_K
@@ -72,6 +73,9 @@ _MAXP = replace(
     _RERANK, name="hybrid_rerank_maxp", rerank_window=MAXP_WINDOW, rerank_overlap=MAXP_OVERLAP
 )
 _HEADERS_MAXP = replace(_MAXP, name="hybrid_rerank_headers_maxp", headers=True)
+_P4 = replace(_HYBRID, name="hybrid_nvidia", generator_provider="nvidia")
+_P4_HEADERS = replace(_P4, name="hybrid_headers", headers=True)
+_P4_TABLES = replace(_P4_HEADERS, name="hybrid_headers_tables", corpus="v2")
 CONFIGS = {
     "baseline": RunConfig(),
     "hybrid": _HYBRID,
@@ -90,8 +94,16 @@ CONFIGS = {
         _HEADERS_MAXP, name="hybrid_rerank_headers_maxp_k8", k=8
     ),
     "baseline_k8": RunConfig(name="baseline_k8", k=8),
-    # Phase 4: the same retrieval with the generator on NVIDIA NIM (provider check).
-    "hybrid_nvidia": replace(_HYBRID, name="hybrid_nvidia", generator_provider="nvidia"),
+    # Phase 4: the same retrieval with the generator on NVIDIA NIM (provider check), then the
+    # cumulative Phase 4 rows (all on NVIDIA).
+    "hybrid_nvidia": _P4,
+    "hybrid_headers": _P4_HEADERS,
+    "hybrid_headers_tables": _P4_TABLES,
+    "hybrid_headers_tables_answer_v2": replace(
+        _P4_TABLES,
+        name="hybrid_headers_tables_answer_v2",
+        answer_prompt=answer_prompt_id("answer_v2"),
+    ),
     "hybrid_rerank_headers_maxp_nvidia": replace(
         _HEADERS_MAXP, name="hybrid_rerank_headers_maxp_nvidia", generator_provider="nvidia"
     ),
@@ -107,6 +119,17 @@ def run_id(config: RunConfig, split: str, golden_sha: str, chunks_sha: str) -> s
     }
     payload = {**fields, "split": split, "golden": golden_sha, "chunks": chunks_sha}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def answer_version(config: RunConfig) -> str:
+    """The answer prompt's version, after checking its hash still matches the prompt text."""
+    version = config.answer_prompt.split(":")[0]
+    if answer_prompt_id(version) != config.answer_prompt:
+        raise ValueError(
+            f"{config.name}: {config.answer_prompt} no longer matches the prompt text "
+            f"({answer_prompt_id(version)}); give the changed prompt a new version"
+        )
+    return version
 
 
 def build_retriever(config: RunConfig, chunks: list[dict], embedder, reranker=None):
@@ -156,6 +179,7 @@ def evaluate_item(
         llm,
         model=config.generator,
         provider=None if provider == RETRIEVAL_DEFAULTS["generator_provider"] else provider,
+        prompt_version=answer_version(config),
     )
     evidence_map = []
     for e in item["evidence"]:

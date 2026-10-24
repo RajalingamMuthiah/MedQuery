@@ -111,3 +111,15 @@ def test_prose_chunks_are_identical_in_v1_and_v2():
         return [c.text for c in chunk_document("d", pages, table_format=fmt) if c.kind != "table"]
 
     assert prose("v1") == prose("v2")
+
+
+def test_text_only_tables_keep_their_first_row_as_the_header():
+    rows = [
+        ["Organization", "Names"],
+        ["Department of Veterans Affairs", "Paul Conlin, MD"],
+        ["Department of Defense", "Jane Doe, MD"],
+    ]
+    head, body = tables.split_header(rows)
+    assert head == [rows[0]] and body == rows[1:]
+    deep = [["Year", "Value"]] + [["text", "more text"]] * 5 + [["2018", "12.5"]]
+    assert len(tables.split_header(deep)[0]) == 1  # first numeric row too far down

@@ -4,7 +4,13 @@ import re
 
 _RULE_RE = re.compile(r"^\|[-| :]+\|$")
 _SPLIT_DECIMAL_RE = re.compile(r"\d \.\d")
-_CAPTION_END_RE = re.compile(r"[.:)]\s*$")
+# A caption cut off mid-sentence ends on a comma, hyphen or function word ("...diabetes among").
+_CAPTION_CUT_RE = re.compile(
+    r"(,|-|\b(and|or|of|the|with|among|for|in|by|to|a|an|from|on))"
+    r"\s*(\((continued|part \d+ of \d+)\))?$",
+    re.IGNORECASE,
+)
+TABLE_CEILING_WORDS = 480
 
 
 def _rows(text: str) -> list[list[str]]:
@@ -45,23 +51,26 @@ def table_stats(chunks: list[dict]) -> dict:
         "multi_row_header": 0,
         "all_empty_columns": 0,
         "split_decimals": 0,
+        "over_480_words": 0,
     }
     for c in tables:
         cap = caption(c["text"])
         if not cap:
             stats["no_caption"] += 1
-        elif not _CAPTION_END_RE.search(cap):
+        elif _CAPTION_CUT_RE.search(cap):
             stats["caption_cut_mid_sentence"] += 1
         rows = _rows(c["text"])
         if rows:
             width = len(rows[0])
             if any(all(i >= len(r) or not r[i] for r in rows) for i in range(width)):
                 stats["all_empty_columns"] += 1
-            second = rows[1] if len(rows) > 1 else []
-            if any(second) and not any(re.search(r"\d", cell) for cell in second[1:]):
+            if len(split_header(clean_rows(rows))[0]) > 1:  # header rows above numeric data
                 stats["multi_row_header"] += 1
         if _SPLIT_DECIMAL_RE.search(c["text"]):
             stats["split_decimals"] += 1
+        words = [w for w in c["text"].split() if w.strip("|-:")]  # real words, no table markup
+        if len(words) > TABLE_CEILING_WORDS:
+            stats["over_480_words"] += 1
     stats["continuation_without_caption_or_header"] = sum(
         is_continuation(a, b) for a, b in zip(chunks, chunks[1:], strict=False)
     )
@@ -103,11 +112,13 @@ def _is_header_row(row: list[str]) -> bool:
 
 
 def split_header(rows: list[list[str]]) -> tuple[list[list[str]], list[list[str]]]:
-    """Leading header rows (at most MAX_HEADER_ROWS, and never every row) and the body."""
-    n = 0
-    while n < min(MAX_HEADER_ROWS, len(rows) - 1) and _is_header_row(rows[n]):
-        n += 1
-    return rows[: max(n, 1)], rows[max(n, 1) :]
+    """Leading header rows and the body. Rows are merged into the header only when a numeric
+    data row follows within MAX_HEADER_ROWS rows; a text-only table (or one whose first numeric
+    row comes later) keeps its first row as the header, so its text rows are never merged."""
+    first_data = next((i for i, r in enumerate(rows) if not _is_header_row(r)), None)
+    if first_data is None or first_data == 0 or first_data > MAX_HEADER_ROWS:
+        return rows[:1], rows[1:]
+    return rows[:first_data], rows[first_data:]
 
 
 def merge_header(header: list[list[str]]) -> list[str]:
