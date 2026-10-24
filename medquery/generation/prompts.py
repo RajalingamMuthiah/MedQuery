@@ -25,6 +25,11 @@ USER_TEMPLATE = "Context passages:\n{passages}\n\nQuestion: {question}"
 
 _ID_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*:\d{4}")
 _BRACKET_RE = re.compile(r"\[([^\[\]]+)\]")
+# The generator sometimes writes ids with Unicode hyphens (U+2010-2013, U+2212) or in fullwidth
+# brackets; they are normalised before parsing so a valid citation is not lost.
+_CITATION_FIXES = str.maketrans(
+    {c: "-" for c in "\u2010\u2011\u2012\u2013\u2212"} | {"\u3010": "[", "\u3011": "]"}
+)
 
 
 def passage_header(chunk: dict) -> str:
@@ -70,7 +75,7 @@ def is_abstention(text: str) -> bool:
 def extract_citations(text: str) -> list[str]:
     """Chunk ids cited in square brackets, in order of first appearance, without duplicates."""
     cited: list[str] = []
-    for group in _BRACKET_RE.findall(text):
+    for group in _BRACKET_RE.findall(text.translate(_CITATION_FIXES)):
         for chunk_id in _ID_RE.findall(group):
             if chunk_id not in cited:
                 cited.append(chunk_id)
