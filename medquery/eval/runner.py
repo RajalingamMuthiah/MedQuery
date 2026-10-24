@@ -13,13 +13,14 @@ from medquery.eval.evidence import Evidence, EvidenceMapper
 from medquery.eval.judge import JUDGE_VERSION, JudgeFailed, judge, prompt_id
 from medquery.fileio import atomic_write, atomic_write_bytes, exclusive_lock
 from medquery.generation.answer import answer_from_hits
-from medquery.generation.prompts import ANSWER_HASH, ANSWER_VERSION
+from medquery.generation.prompts import ANSWER_HASH, ANSWER_VERSION, extract_citations
 from medquery.generation.prompts import prompt_id as answer_prompt_id
 from medquery.llm.base import LLM, Completion
 from medquery.retrieval.dense import Retriever
 from medquery.retrieval.fusion import RRF_K
 from medquery.retrieval.pipeline import HybridRetriever
 from medquery.retrieval.rerank import FastEmbedReranker
+from medquery.verify.verifier import verify, verify_id
 
 RUNS_DIR = paths.ROOT / "data" / "eval_runs"
 
@@ -49,6 +50,8 @@ class RunConfig:
     # version (v2 = table fix, data/processed/v2/).
     generator_provider: str = "groq"
     corpus: str = "v1"
+    # Phase 5: claim verifier prompt id ('' = no verification).
+    verifier: str = ""
 
 
 RETRIEVAL_DEFAULTS = {
@@ -61,6 +64,7 @@ RETRIEVAL_DEFAULTS = {
     "rerank_overlap": 0,
     "generator_provider": "groq",
     "corpus": "v1",
+    "verifier": "",
 }
 # MaxP windows for bge-reranker-base's 512-token input: 320 passage tokens + the longest
 # header in the corpus (115 tokens) + the longest golden question (56) + 3 special tokens =
@@ -76,6 +80,10 @@ _HEADERS_MAXP = replace(_MAXP, name="hybrid_rerank_headers_maxp", headers=True)
 _P4 = replace(_HYBRID, name="hybrid_nvidia", generator_provider="nvidia")
 _P4_HEADERS = replace(_P4, name="hybrid_headers", headers=True)
 _P4_TABLES = replace(_P4_HEADERS, name="hybrid_headers_tables", corpus="v2")
+# The live config (user decision after Phase 4): hybrid + headers + corpus v2 + answer_v2.
+_LIVE = replace(
+    _P4_TABLES, name="hybrid_headers_tables_answer_v2", answer_prompt=answer_prompt_id("answer_v2")
+)
 CONFIGS = {
     "baseline": RunConfig(),
     "hybrid": _HYBRID,
@@ -99,11 +107,11 @@ CONFIGS = {
     "hybrid_nvidia": _P4,
     "hybrid_headers": _P4_HEADERS,
     "hybrid_headers_tables": _P4_TABLES,
-    "hybrid_headers_tables_answer_v2": replace(
-        _P4_TABLES,
-        name="hybrid_headers_tables_answer_v2",
-        answer_prompt=answer_prompt_id("answer_v2"),
-    ),
+    "hybrid_headers_tables_answer_v2": _LIVE,
+    # Phase 5: the live config + claim verification, and the Phase 2 baseline on NVIDIA (for the
+    # final test-split table, where every row's generator runs on NVIDIA).
+    "live_verify": replace(_LIVE, name="live_verify", verifier=verify_id()),
+    "baseline_nvidia": RunConfig(name="baseline_nvidia", generator_provider="nvidia"),
     "hybrid_rerank_headers_maxp_nvidia": replace(
         _HEADERS_MAXP, name="hybrid_rerank_headers_maxp_nvidia", generator_provider="nvidia"
     ),
@@ -181,6 +189,24 @@ def evaluate_item(
         provider=None if provider == RETRIEVAL_DEFAULTS["generator_provider"] else provider,
         prompt_version=answer_version(config),
     )
+    verification, original_answer = None, result.text
+    if config.verifier and not result.abstained:
+        if config.verifier != verify_id():
+            raise ValueError(f"{config.name}: verifier {config.verifier} != current {verify_id()}")
+        verification = verify(
+            item["question"],
+            context,
+            result.text,
+            llm,
+            model=config.generator,
+            provider=None if provider == RETRIEVAL_DEFAULTS["generator_provider"] else provider,
+        )
+        result = replace(
+            result,
+            text=verification.text,
+            abstained=verification.abstained,
+            cited_ids=extract_citations(verification.text),
+        )
     evidence_map = []
     for e in item["evidence"]:
         mapped = mapper.map(Evidence(e["doc_id"], e["page"], e["quote"]))
@@ -205,6 +231,21 @@ def evaluate_item(
     gen_usage = _usage([result.completion])
     judge_usage = _usage(judge_completions)
     extra = {}
+    verify_s = 0.0
+    if verification is not None:
+        verify_usage = _usage(verification.completions)
+        verify_s = round(sum(c.latency_s for c in verification.completions), 4)
+        extra["verification"] = {
+            "verifier": config.verifier,
+            "answer_original": original_answer,
+            "sentences": verification.sentences,
+            "removed": verification.removed,
+            "failed": verification.failed,
+            "error": verification.error,
+            "verify_s": verify_s,
+            "usage": verify_usage,
+            "cost_usd": round(_cost(config.generator, verify_usage, config.generator_provider), 8),
+        }
     if getattr(retriever, "last_stats", None):  # e.g. reranker inputs over the max length
         extra["retrieval_stats"] = dict(retriever.last_stats)
     return extra | {
@@ -230,7 +271,7 @@ def evaluate_item(
         "latency": {
             "retrieval_s": round(retrieval_s, 4),
             "generation_s": result.completion.latency_s,
-            "end_to_end_s": round(retrieval_s + result.completion.latency_s, 4),
+            "end_to_end_s": round(retrieval_s + result.completion.latency_s + verify_s, 4),
             "wait_s": result.completion.wait_s,
         },
         "generation_usage": gen_usage,
