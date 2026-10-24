@@ -161,3 +161,32 @@ def test_run_refuses_when_the_budget_would_be_exceeded(monkeypatch, capsys):
     assert cli.main(["run", "--split", "dev", "--config", "hybrid_nvidia"]) == 1
     out = capsys.readouterr().out
     assert "refused" in out and "$2.90 spent" in out
+
+
+# --- provider-check report ---
+
+
+def test_provider_check_flags_real_differences_and_reparses_citations():
+    from medquery.eval.compare import provider_check_markdown, reparse_citations
+    from tests.test_compare import GIT, GOLDEN, records
+
+    groq = records(correct=True)
+    nvidia_same = [dict(r) for r in groq]
+    nvidia_worse = records(correct=False)
+    pair = (CONFIGS["hybrid"], "g1", groq, CONFIGS["hybrid_nvidia"], "n1", nvidia_same)
+    md, rows, any_real = provider_check_markdown([pair], GIT, GOLDEN, "c" * 64, "t")
+    assert not any_real and "provider switch is neutral" in md
+    assert {r["metric"] for r in rows} >= {"answer_correctness", "citation_validity"}
+    worse = (CONFIGS["hybrid"], "g1", groq, CONFIGS["hybrid_nvidia"], "n2", nvidia_worse)
+    md, _, any_real = provider_check_markdown([worse], GIT, GOLDEN, "c" * 64, "t")
+    assert any_real and "**yes**" in md
+    rec = groq[0] | {"answer": "x [dm‑stats‑2020:0014]", "cited_ids": ["2020:0014"]}
+    assert reparse_citations([rec])[0]["cited_ids"] == ["dm-stats-2020:0014"]
+
+
+def test_provider_check_cli_needs_a_clean_tree(monkeypatch, capsys):
+    import medquery.eval.__main__ as cli
+
+    monkeypatch.setattr(cli, "git_state", lambda: {"commit": "x", "dirty": True})
+    assert cli.main(["provider-check", "--configs", "hybrid"]) == 1
+    assert "clean, committed" in capsys.readouterr().out

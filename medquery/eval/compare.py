@@ -442,3 +442,130 @@ def write_ablation(runs, split, git, golden_meta, chunks_sha, out_dir: Path = RE
 
 def config_summary(cfg: RunConfig) -> dict:
     return asdict(cfg)
+
+
+# --- Phase 4: provider check (same retrieval, generator on Groq vs NVIDIA) ---
+
+PROVIDER_METRICS = [*SUMMARY, ("citation_validity", metrics.citation_validity)]
+
+
+def reparse_citations(records: list[dict]) -> list[dict]:
+    """Records with citations re-parsed from the stored answer text by the current parser, so
+    rows generated before and after the parser fix are compared on the same terms."""
+    from medquery.generation.prompts import extract_citations
+
+    return [
+        r if r["abstained"] else r | {"cited_ids": extract_citations(r["answer"])} for r in records
+    ]
+
+
+def _generation(records: list[dict]) -> dict:
+    return {
+        "generation_s": metrics.percentiles([r["latency"]["generation_s"] for r in records]),
+        "truncated": sum(r["finish_reason"] == "length" for r in records),
+        "generation_cost_per_query": float(np.mean([r["cost_usd"]["generation"] for r in records])),
+        "judge_cost_total": float(sum(r["cost_usd"]["judge"] for r in records)),
+    }
+
+
+def provider_check_markdown(
+    pairs: list, git: dict, golden_meta: dict, chunks_sha: str, created: str
+):
+    """pairs: (groq config, run id, records, nvidia config, run id, records). Returns the report,
+    CSV rows and whether any paired difference is real (its 95% CI excludes 0)."""
+    dirty = "unknown" if git["dirty"] is None else ("DIRTY" if git["dirty"] else "clean")
+    first = pairs[0][0]
+    lines = [
+        "# MedQuery provider check: generator on Groq vs NVIDIA NIM (dev split)",
+        "",
+        f"- Created (UTC): {created}",
+        f"- Git commit: `{git['commit']}` ({dirty} working tree)",
+        f"- Golden set: `{golden_meta['version']}` sha256 `{golden_meta['sha256']}`; corpus "
+        f"`chunks.jsonl` sha256 `{chunks_sha}`",
+        f"- Same model `{first.generator}`, prompt `{first.answer_prompt}`, judge `{first.judge}` "
+        f"with `{first.judge_prompt}`. Retrieval is identical within each pair, so differences "
+        "come from generation only.",
+        f"- Paired bootstrap: {N_RESAMPLES} resamples of the same question ids, seed {SEED}; a "
+        "difference counts as **real** only if its 95% CI excludes 0.",
+        "- Citations are re-parsed from the stored answers with the current parser (Unicode "
+        "hyphens and fullwidth brackets normalised) for both providers.",
+        f"- Prices: {settings.price_note()}",
+    ]
+    csv_rows, any_real = [], False
+    for groq_cfg, groq_rid, groq_recs, _nv_cfg, nv_rid, nv_recs in pairs:
+        groq_recs, nv_recs = reparse_citations(groq_recs), reparse_citations(nv_recs)
+        lines += [
+            "",
+            f"## `{groq_cfg.name}`: Groq run `{groq_rid}` vs NVIDIA run `{nv_rid}`",
+            "",
+            "| metric | Groq | NVIDIA | NVIDIA - Groq | 95% CI | real? |",
+            "|---|---|---|---|---|---|",
+        ]
+        for name, fn in PROVIDER_METRICS:
+            g, n = fn(groq_recs), fn(nv_recs)
+            d, low, high = paired_bootstrap(groq_recs, nv_recs, fn)
+            real = low is not None and (low > 0 or high < 0)
+            any_real |= real
+            verdict = "n/a" if low is None else ("**yes**" if real else "no")
+            diff = "n/a" if d is None else f"{d:+.3f}"
+            lines.append(
+                f"| {name} | {_fmt(g)} | {_fmt(n)} | {diff} | {_ci(low, high)} | {verdict} |"
+            )
+            csv_rows.append(
+                {
+                    "config": groq_cfg.name,
+                    "metric": name,
+                    "groq": g,
+                    "nvidia": n,
+                    "diff": d,
+                    "ci_low": low,
+                    "ci_high": high,
+                }
+            )
+        gg, gn = _generation(groq_recs), _generation(nv_recs)
+        lines += [
+            "",
+            "| | Groq | NVIDIA |",
+            "|---|---|---|",
+            f"| generation latency p50 / p95 (s) | {_fmt(gg['generation_s']['p50'], 2)} / "
+            f"{_fmt(gg['generation_s']['p95'], 2)} | {_fmt(gn['generation_s']['p50'], 2)} / "
+            f"{_fmt(gn['generation_s']['p95'], 2)} |",
+            f"| truncated generations | {gg['truncated']} | {gn['truncated']} |",
+            f"| generation cost per query | ${gg['generation_cost_per_query']:.6f} | "
+            f"${gn['generation_cost_per_query']:.6f} |",
+            f"| judge cost (eval overhead) | ${gg['judge_cost_total']:.4f} | "
+            f"${gn['judge_cost_total']:.4f} |",
+        ]
+    verdict = (
+        "at least one paired difference is real: the provider switch changes results."
+        if any_real
+        else "no paired difference is real: the provider switch is neutral on dev."
+    )
+    lines += ["", f"**Verdict:** {verdict}"]
+    return "\n".join(lines) + "\n", csv_rows, any_real
+
+
+def write_provider_check(pairs, split, git, golden_meta, chunks_sha, out_dir: Path = REPORTS_DIR):
+    import csv
+    import hashlib
+    import io
+
+    if split != "dev":
+        raise ValueError("Phase 4 runs on the dev split only")
+    created = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
+    md, rows, any_real = provider_check_markdown(pairs, git, golden_meta, chunks_sha, created)
+    key = hashlib.sha256("|".join(p[1] + p[4] for p in pairs).encode()).hexdigest()[:10]
+    stem = f"{created[:10]}_provider_check_{split}_{key}"
+    buffer = io.StringIO()
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=["config", "metric", "groq", "nvidia", "diff", "ci_low", "ci_high"],
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+    out = [out_dir / f"{stem}.md", out_dir / f"{stem}.csv"]
+    for path, text in zip(out, (md, buffer.getvalue()), strict=True):
+        with atomic_write(path) as f:
+            f.write(text)
+    return out, any_real

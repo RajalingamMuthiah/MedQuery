@@ -9,7 +9,12 @@ from collections import Counter
 
 from medquery import config, paths
 from medquery.eval import budget
-from medquery.eval.compare import BEST_ROW_RULE, best_row, write_ablation
+from medquery.eval.compare import (
+    BEST_ROW_RULE,
+    best_row,
+    write_ablation,
+    write_provider_check,
+)
 from medquery.eval.evidence import EvidenceMapper
 from medquery.eval.freeze import FreezeError, freeze, load_golden, sha256_file, write_frozen
 from medquery.eval.gitinfo import git_state
@@ -466,6 +471,32 @@ def cmd_best_row(config_names: list[str]) -> int:
     return 0
 
 
+def cmd_provider_check(config_names: list[str]) -> int:
+    """Groq vs NVIDIA on the same retrieval configs (completed dev runs, clean tree)."""
+    git = git_state()
+    if git["dirty"] is not False:
+        print("refused: provider-check reports need a clean, committed git tree")
+        return 1
+    names = [n for base in config_names for n in (base, f"{base}_nvidia")]
+    missing = [n for n in names if n not in CONFIGS]
+    if missing:
+        print(f"unknown configs: {missing}")
+        return 1
+    loaded = _completed_runs("dev", names)
+    if loaded is None:
+        return 1
+    runs, golden_meta, chunks_sha = loaded
+    pairs = [(*runs[i], *runs[i + 1]) for i in range(0, len(runs), 2)]
+    written, any_real = write_provider_check(pairs, "dev", git, golden_meta, chunks_sha)
+    for path in written:
+        print(f"wrote {path.relative_to(paths.ROOT)}")
+    if any_real:
+        print("STOP: at least one paired difference is real (see the report)")
+        return 3
+    print("no paired difference is real")
+    return 0
+
+
 def cmd_ablation(split: str, config_names: list[str]) -> int:
     """Ablation report over completed runs of the given configs (dev only, clean tree)."""
     if split != "dev":
@@ -656,6 +687,8 @@ def main(argv: list[str] | None = None) -> int:
     abl = sub.add_parser("ablation", help="paired comparison of completed dev runs")
     abl.add_argument("--split", choices=["dev", "test"], default="dev")
     abl.add_argument("--configs", nargs="+", choices=sorted(CONFIGS), required=True)
+    pc = sub.add_parser("provider-check", help="Groq vs NVIDIA on completed dev runs")
+    pc.add_argument("--configs", nargs="+", required=True, help="base configs (Groq names)")
     best = sub.add_parser("best-row", help="apply the best-row rule to completed dev runs")
     best.add_argument("--configs", nargs="+", choices=sorted(CONFIGS), required=True)
     jr = sub.add_parser("judge-review").add_subparsers(dest="action", required=True)
@@ -691,6 +724,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_judge_sample(args.run, args.version, args.exclude_labelled)
     if args.group == "ablation":
         return cmd_ablation(args.split, args.configs)
+    if args.group == "provider-check":
+        return cmd_provider_check(args.configs)
     if args.group == "best-row":
         return cmd_best_row(args.configs)
     if args.group == "golden" and args.action == "freeze":
