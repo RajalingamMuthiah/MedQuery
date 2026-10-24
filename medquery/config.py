@@ -1,6 +1,7 @@
 """Model, provider, retrieval and pricing settings. Every report records the values it used."""
 
 # Providers: base URL, API-key variable, and per-model client-side rate limits.
+DEFAULT_TIMEOUT_S = 120.0  # per-request client timeout unless a provider sets "timeout_s"
 PROVIDERS = {
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
@@ -20,6 +21,9 @@ PROVIDERS = {
         # Probe 2026-10-24: no rate-limit headers are returned, so this is a conservative
         # client-side limit, not a documented one.
         "rate_limits": {"rpm": 35, "tpm": 200_000},
+        # Free-tier calls queue: Phase 4 measured generation p95 of 58-72 s, and Phase 5 saw
+        # calls exceed the default 120 s request timeout. Other providers keep the default.
+        "timeout_s": 180.0,
     },
 }
 API_KEY_ENV = PROVIDERS["groq"]["key_env"]  # kept for older call sites

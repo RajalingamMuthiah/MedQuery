@@ -208,3 +208,12 @@ def test_provider_check_section_reports_real_differences_and_primary_metrics(tmp
     text = "\n".join(provider_check_section(path))
     assert "3 paired tests" in text and "faithfulness +0.016" in text
     assert "(favours NVIDIA)" in text and "unchanged on every row" in text
+
+
+def test_request_timeout_is_per_provider_and_longer_for_nvidia(monkeypatch):
+    monkeypatch.setattr("medquery.llm.load_dotenv", lambda *a, **k: None)
+    for name in ("GROQ_API_KEY", "OPENAI_API_KEY", "NVIDIA_API_KEY"):
+        monkeypatch.setenv(name, "k-" + name)
+    clients = get_client()._clients
+    timeout = {name: c._transport._client.timeout for name, c in clients.items()}
+    assert timeout == {"groq": 120.0, "openai": 120.0, "nvidia": 180.0}

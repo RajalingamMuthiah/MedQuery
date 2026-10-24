@@ -66,7 +66,11 @@ def get_client() -> Router:
         provider = config.PROVIDERS[name]
         limits = provider["rate_limits"]
         clients[name] = LLMClient(
-            OpenAICompatTransport(provider["base_url"], key),
+            OpenAICompatTransport(
+                provider["base_url"],
+                key,
+                timeout_s=provider.get("timeout_s", config.DEFAULT_TIMEOUT_S),
+            ),
             provider=name,
             cache=JsonCache(LLM_CACHE),
             throttle_factory=lambda limits=limits: Throttle(**limits),
