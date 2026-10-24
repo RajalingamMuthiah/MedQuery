@@ -66,3 +66,93 @@ def table_stats(chunks: list[dict]) -> dict:
         is_continuation(a, b) for a, b in zip(chunks, chunks[1:], strict=False)
     )
     return stats
+
+
+# --- table_v2 rendering (corpus v2; corpus v1 keeps Table.to_markdown unchanged) ---
+
+TABLE_FORMATS = ("v1", "v2")
+MAX_HEADER_ROWS = 4
+MAX_TABLE_WORDS = 450  # body words per v2 table chunk; longer tables split, header repeated
+_DECIMAL_RE = re.compile(r"(\d) \.(\d)")
+_NUMERIC_CELL_RE = re.compile(r"^[<>\u2264\u2265~+\-\u2212\u2013]?\s*\d")
+
+
+def rejoin_decimals(text: str) -> str:
+    """'26 .8' -> '26.8': PDF text layers sometimes put a space before a decimal point."""
+    return _DECIMAL_RE.sub(r"\1.\2", text)
+
+
+def _pad(rows: list[list[str]]) -> list[list[str]]:
+    width = max((len(r) for r in rows), default=0)
+    return [r + [""] * (width - len(r)) for r in rows]
+
+
+def drop_empty_columns(rows: list[list[str]]) -> list[list[str]]:
+    rows = _pad(rows)
+    keep = [i for i in range(len(rows[0]) if rows else 0) if any(r[i].strip() for r in rows)]
+    return [[r[i] for i in keep] for r in rows]
+
+
+def _is_header_row(row: list[str]) -> bool:
+    """A header row has no numeric data: fewer than half of its filled cells after the first
+    column start with a number ('(95% CI)' and 'Number in Millions' are header text)."""
+    cells = [c for c in row[1:] if c.strip()]
+    if not cells:
+        return True
+    return sum(bool(_NUMERIC_CELL_RE.match(c.strip())) for c in cells) * 2 < len(cells)
+
+
+def split_header(rows: list[list[str]]) -> tuple[list[list[str]], list[list[str]]]:
+    """Leading header rows (at most MAX_HEADER_ROWS, and never every row) and the body."""
+    n = 0
+    while n < min(MAX_HEADER_ROWS, len(rows) - 1) and _is_header_row(rows[n]):
+        n += 1
+    return rows[: max(n, 1)], rows[max(n, 1) :]
+
+
+def merge_header(header: list[list[str]]) -> list[str]:
+    """One header cell per column: the column's header fragments joined top to bottom, so a
+    unit row ('Number in Millions', '(95% CI)') stays next to its column name."""
+    header = _pad(header)
+    return [" ".join(r[i].strip() for r in header if r[i].strip()) for i in range(len(header[0]))]
+
+
+def markdown(header: list[str], body: list[list[str]]) -> str:
+    rows = _pad([header, *body])
+    out = ["| " + " | ".join(rows[0]) + " |", "|" + "---|" * len(rows[0])]
+    out += ["| " + " | ".join(r) + " |" for r in rows[1:]]
+    return "\n".join(out)
+
+
+def full_caption(caption: str, caption_more: str) -> str:
+    return " ".join(p for p in (caption.strip(), caption_more.strip()) if p)
+
+
+def clean_rows(rows: list[list[str]]) -> list[list[str]]:
+    return drop_empty_columns([[rejoin_decimals(c) for c in r] for r in rows])
+
+
+def render_v2(caption: str, header: list[str], body: list[list[str]]) -> list[str]:
+    """Chunk texts for one table: caption, one merged header row, body rows. A table whose body
+    exceeds MAX_TABLE_WORDS is split into parts of whole rows, each repeating the header."""
+    parts: list[list[list[str]]] = [[]]
+    words = 0
+    for row in body:
+        n = len(" ".join(row).split())
+        if parts[-1] and words + n > MAX_TABLE_WORDS:
+            parts.append([])
+            words = 0
+        parts[-1].append(row)
+        words += n
+    texts = []
+    for i, part in enumerate(parts, 1):
+        label = caption
+        if len(parts) > 1:
+            label = (
+                f"{caption} (part {i} of {len(parts)})"
+                if caption
+                else f"(part {i} of {len(parts)})"
+            )
+        table = markdown(header, part)
+        texts.append(f"{label}\n\n{table}" if label else table)
+    return texts

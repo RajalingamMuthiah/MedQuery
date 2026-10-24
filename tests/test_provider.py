@@ -159,6 +159,7 @@ def test_run_refuses_when_the_budget_would_be_exceeded(monkeypatch, capsys):
         cli.budget, "check", lambda *a, **k: budget.BudgetCheck(2.9, 0.5, budget.PHASE4_CAP_USD)
     )
     monkeypatch.setattr(cli, "sha256_file", lambda path: "x")  # no corpus needed (CI has none)
+    monkeypatch.setattr(cli, "chunks_path", lambda corpus: cli.paths.ROOT / "pyproject.toml")
     assert cli.main(["run", "--split", "dev", "--config", "hybrid_nvidia"]) == 1
     out = capsys.readouterr().out
     assert "refused" in out and "$2.90 spent" in out

@@ -10,7 +10,11 @@ import numpy as np
 from medquery import paths
 from medquery.retrieval.embed import Embedder, cache_path, embed_cached, normalise
 
-CHUNKS = paths.DATA_PROCESSED / "chunks.jsonl"
+CHUNKS = paths.DATA_PROCESSED / "chunks.jsonl"  # corpus v1
+
+
+def chunks_path(corpus: str = "v1") -> Path:
+    return paths.corpus_dir(corpus) / "chunks.jsonl"
 
 
 def load_chunks(path: Path = CHUNKS, include_quiz: bool = False) -> list[dict]:

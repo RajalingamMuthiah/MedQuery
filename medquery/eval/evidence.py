@@ -24,6 +24,7 @@ def normalise(text: str) -> str:
     text = text.replace("|", " ")
     text = re.sub(r"(\w)-\s+(\w)", r"\1\2", text)  # words hyphenated across a line break
     text = re.sub(r"(\d)\s+(?=[a-zµ%])", r"\1", text)  # "130/80 mmhg" == "130/80mmhg" (PDF kerning)
+    text = re.sub(r"(\d) \.(\d)", r"\1.\2", text)  # "26 .8" == "26.8" (corpus v2 rejoins them)
     return re.sub(r"\s+", " ", text).strip()
 
 

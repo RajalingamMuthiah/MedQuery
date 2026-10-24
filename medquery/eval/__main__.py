@@ -67,7 +67,7 @@ from medquery.eval.usage import format_summary, summarize
 from medquery.fileio import LockHeld, atomic_write, exclusive_lock
 from medquery.ingest.manifest import load_manifest
 from medquery.llm import LLMError, QuotaExhausted, get_client
-from medquery.retrieval.dense import CHUNKS, Retriever, load_chunks
+from medquery.retrieval.dense import Retriever, chunks_path, load_chunks
 from medquery.retrieval.embed import FastEmbedder
 
 VERSION = "v1"
@@ -287,7 +287,11 @@ def cmd_run(split: str, config_name: str) -> int:
     if split == "test" and git["dirty"] is not False:
         print("refused: test-split runs are milestones and need a clean, committed git tree")
         return 1
-    chunks_sha = sha256_file(CHUNKS)
+    corpus = chunks_path(config.corpus)
+    if not corpus.exists():
+        print(f"error: {corpus} is missing; build corpus {config.corpus} first", file=sys.stderr)
+        return 1
+    chunks_sha = sha256_file(corpus)
     rid = run_id(config, split, golden_meta["sha256"], chunks_sha)
     run_dir = RUNS_DIR / rid
     print(f"run {rid}: config {config.name}, split {split}, golden {golden_meta['version']}")
@@ -302,7 +306,9 @@ def cmd_run(split: str, config_name: str) -> int:
             return 1
     try:
         retriever = build_retriever(
-            config, load_chunks(include_quiz=config.include_quiz), FastEmbedder(config.embed_model)
+            config,
+            load_chunks(corpus, include_quiz=config.include_quiz),
+            FastEmbedder(config.embed_model),
         )
         records = run(
             config,
@@ -310,7 +316,7 @@ def cmd_run(split: str, config_name: str) -> int:
             items,
             retriever,
             get_client(),
-            EvidenceMapper(load_chunks(include_quiz=True)),
+            EvidenceMapper(load_chunks(corpus, include_quiz=True)),
             run_dir,
         )
     except QuotaExhausted as exc:
@@ -366,7 +372,8 @@ def cmd_judge_sample(run: str, version: str = "v1", exclude_labelled: str | None
     else:
         n_claims, n_answers = FRESH_SAMPLE["claims"], FRESH_SAMPLE["answers"]
         min_unsupported = FRESH_SAMPLE["min_unsupported"]
-    chunks = {c["id"]: c for c in load_chunks(include_quiz=True)}
+    corpus = chunks_path(run_config["config"].get("corpus", "v1"))
+    chunks = {c["id"]: c for c in load_chunks(corpus, include_quiz=True)}
     natural_unsupported = sum(
         not c["supported_by_context"] and judge_review_key(c["text"]) not in exclude_claims
         for r in records
@@ -438,20 +445,24 @@ def cmd_judge_sample(run: str, version: str = "v1", exclude_labelled: str | None
 
 
 def _completed_runs(split: str, config_names: list[str]):
-    """(runs, golden meta, chunks sha) for completed runs of the configs, or None."""
+    """(runs, golden meta, corpus note) for completed runs of the configs, or None. The
+    corpus note names each corpus version used and its chunks sha256."""
     items, golden_meta = load_golden("v1")
-    chunks_sha = sha256_file(CHUNKS)
+    shas = {}
     total = sum(1 for i in items if i["split"] == split)
     runs = []
     for name in config_names:
         cfg = CONFIGS[name]
-        rid = run_id(cfg, split, golden_meta["sha256"], chunks_sha)
+        if cfg.corpus not in shas:
+            shas[cfg.corpus] = sha256_file(chunks_path(cfg.corpus))
+        rid = run_id(cfg, split, golden_meta["sha256"], shas[cfg.corpus])
         records = sorted(load_records(RUNS_DIR / rid / "items.jsonl"), key=lambda r: r["id"])
         if len(records) != total:
             print(f"run {rid} ({name}) has {len(records)} of {total} items; finish it first")
             return None
         runs.append((cfg, rid, records))
-    return runs, golden_meta, chunks_sha
+    note = "; ".join(f"{v} `{sha}`" for v, sha in shas.items())
+    return runs, golden_meta, note
 
 
 def cmd_best_row(config_names: list[str]) -> int:
@@ -618,7 +629,9 @@ def cmd_judge_review_measure(
     with review["csv"].open(encoding="utf-8-sig", newline="") as f:
         claim_text = {r["row_id"]: r["claim"] for r in csv.DictReader(f)}
     records = {r["id"]: r for r in load_records(RUNS_DIR / meta["run_id"] / "items.jsonl")}
-    chunks = {c["id"]: c for c in load_chunks(include_quiz=True)}
+    run_json = RUNS_DIR / meta["run_id"] / "run.json"
+    corpus = json.loads(run_json.read_text(encoding="utf-8"))["config"].get("corpus", "v1")
+    chunks = {c["id"]: c for c in load_chunks(chunks_path(corpus), include_quiz=True)}
     try:
         verdicts, unmatched, calls = measure_judge(
             judge_version, model, labels, claim_text, records, chunks, get_client(), seed=seed

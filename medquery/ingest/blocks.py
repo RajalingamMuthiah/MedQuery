@@ -24,6 +24,7 @@ class Table:
     rows: list[list[str]]
     caption: str
     top: float  # fraction of page height
+    caption_more: str = ""  # the caption's wrapped lines below the 'Table N' line (corpus v2)
 
     def to_markdown(self) -> str:
         width = max(len(row) for row in self.rows)

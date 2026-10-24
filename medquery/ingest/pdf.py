@@ -47,7 +47,12 @@ def text_page(page, number: int) -> Page:
                 TextBox(lines, top=obj["top"] / page.height, bottom=obj["bottom"] / page.height)
             )
     tables = [
-        Table(rows=rows, caption=_caption(page, bbox), top=bbox[1] / page.height)
+        Table(
+            rows=rows,
+            caption=_caption(page, bbox),
+            top=bbox[1] / page.height,
+            caption_more=_caption_more(page, bbox),
+        )
         for bbox, rows in found
     ]
     return Page(number=number, boxes=boxes, tables=tables)
@@ -261,6 +266,34 @@ def _box_lines(page, box) -> list[Line]:
         size = median(c["size"] for c in chars)
         lines.append(Line(text=text, size=round(size, 1), bold=bold))
     return lines
+
+
+def _caption_line(page, bbox) -> dict | None:
+    best = None
+    for line in page.extract_text_lines(strip=True):
+        above = bbox[1] - CAPTION_GAP <= line["bottom"] <= bbox[1] + 2
+        overlaps = line["x0"] < bbox[2] and line["x1"] > bbox[0]
+        if above and overlaps and CAPTION_RE.match(line["text"]):
+            best = line
+    return best
+
+
+def _caption_more(page, bbox) -> str:
+    """The caption's wrapped lines: text lines between the 'Table N' line and the table top
+    (used by corpus v2 only; corpus v1 keeps the single caption line)."""
+    first = _caption_line(page, bbox)
+    if first is None:
+        return ""
+    more = [
+        line["text"]
+        for line in page.extract_text_lines(strip=True)
+        if line["top"] >= first["bottom"] - 1
+        and line["bottom"] <= bbox[1] + 2
+        and line["x0"] < bbox[2]
+        and line["x1"] > bbox[0]
+        and line["text"] != first["text"]
+    ]
+    return _normalise(" ".join(more))
 
 
 def _caption(page, bbox) -> str:

@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
+from medquery.ingest import tables
 from medquery.ingest.blocks import Page, Table, TextBox
 from medquery.ingest.headings import HeadingDetector, is_bold_block
 
@@ -286,8 +287,30 @@ def mark_quiz(chunks: list[Chunk]) -> None:
             chunk.kind = "quiz"
 
 
+def _table_v2(item: Table, page: int, last: tuple | None) -> tuple[list[str], tuple]:
+    """Corpus v2 table chunks. A captionless table on the page after a table with the same
+    raw width continues it: it gets '<caption> (continued)' and that table's merged header."""
+    width = max(len(r) for r in item.rows)
+    caption = tables.full_caption(item.caption, item.caption_more)
+    rows = tables.clean_rows(item.rows)
+    continued = not caption and last is not None and last[0] == page - 1 and last[3] == width
+    if continued and len(rows[0]) == len(last[2]):
+        caption = f"{last[1]} (continued)" if last[1] else "(continued)"
+        header, body = last[2], rows
+    else:
+        head, body = tables.split_header(rows)
+        header = tables.merge_header(head)
+        if continued:  # same raw width but different columns after cleaning: keep its own
+            caption = f"{last[1]} (continued)" if last[1] else "(continued)"
+    base_caption = caption.removesuffix(" (continued)") if continued else caption
+    return tables.render_v2(caption, header, body), (page, base_caption, header, width)
+
+
 def chunk_document(
-    doc_id: str, pages: list[Page], dropped: list[tuple[str, Chunk]] | None = None
+    doc_id: str,
+    pages: list[Page],
+    dropped: list[tuple[str, Chunk]] | None = None,
+    table_format: str = "v1",
 ) -> list[Chunk]:
     """Chunk one document. Junk chunks are removed and appended to `dropped` with a reason.
 
@@ -299,6 +322,7 @@ def chunk_document(
     stack: list[tuple[int, str]] = []  # (level, heading text)
     paras: list[_Para] = []
     heading_open = False  # True right after a heading, before any body text
+    last_table: tuple | None = None  # v2: (page, caption, merged header, raw width)
 
     def section() -> str:
         return " > ".join(text for _, text in stack)
@@ -313,14 +337,18 @@ def chunk_document(
             if isinstance(item, Table):
                 flush()
                 heading_open = False
-                text = (
-                    f"{item.caption}\n\n{item.to_markdown()}"
-                    if item.caption
-                    else item.to_markdown()
-                )
-                chunks.append(
-                    Chunk(section(), page.number, page.number, "table", page.source, conf, text)
-                )
+                if table_format == "v2":
+                    texts, last_table = _table_v2(item, page.number, last_table)
+                else:
+                    texts = [
+                        f"{item.caption}\n\n{item.to_markdown()}"
+                        if item.caption
+                        else item.to_markdown()
+                    ]
+                for text in texts:
+                    chunks.append(
+                        Chunk(section(), page.number, page.number, "table", page.source, conf, text)
+                    )
                 continue
             body: list[str] = []
             bold_block = is_bold_block(item)

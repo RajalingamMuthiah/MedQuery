@@ -44,8 +44,10 @@ class RunConfig:
     headers: bool = False
     rerank_window: int = 0  # > 0: MaxP over windows of this many tokens; 0: truncate
     rerank_overlap: int = 0
-    # Phase 4: the generator's provider (same model id on Groq or NVIDIA).
+    # Phase 4: the generator's provider (same model id on Groq or NVIDIA) and the corpus
+    # version (v2 = table fix, data/processed/v2/).
     generator_provider: str = "groq"
+    corpus: str = "v1"
 
 
 RETRIEVAL_DEFAULTS = {
@@ -57,6 +59,7 @@ RETRIEVAL_DEFAULTS = {
     "rerank_window": 0,
     "rerank_overlap": 0,
     "generator_provider": "groq",
+    "corpus": "v1",
 }
 # MaxP windows for bge-reranker-base's 512-token input: 320 passage tokens + the longest
 # header in the corpus (115 tokens) + the longest golden question (56) + 3 special tokens =

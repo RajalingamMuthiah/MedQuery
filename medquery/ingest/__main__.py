@@ -31,9 +31,13 @@ def cmd_download() -> int:
     return 1 if failed else 0
 
 
-def cmd_build() -> int:
+def cmd_build(corpus: str = "v1") -> int:
+    """Corpus v1 -> data/processed/; v2 (table fix) -> data/processed/v2/. v1 is never
+    rewritten by a v2 build."""
+    out_dir = paths.corpus_dir(corpus)
+    out_dir.mkdir(parents=True, exist_ok=True)
     try:
-        summary = build(load_manifest(paths.MANIFEST), paths.DATA_RAW, paths.DATA_PROCESSED)
+        summary = build(load_manifest(paths.MANIFEST), paths.DATA_RAW, out_dir, table_format=corpus)
     except LockHeld as exc:
         print(f"build not started: {exc}", file=sys.stderr)
         return 1
@@ -88,7 +92,12 @@ def main(argv: list[str] | None = None) -> int:
         "sources": cmd_sources,
     }
     parser.add_argument("command", choices=list(commands))
+    parser.add_argument(
+        "--corpus", choices=["v1", "v2"], default="v1", help="build: v2 = table fix (Phase 4)"
+    )
     args = parser.parse_args(argv)
+    if args.command == "build":
+        return cmd_build(args.corpus)
     return commands[args.command]()
 
 

@@ -126,16 +126,16 @@ def doc_stats(doc: Document, pages: list[Page], chunks: list[Chunk], seconds: fl
     }
 
 
-def build(manifest: Manifest, raw_dir: Path, out_dir: Path) -> dict:
+def build(manifest: Manifest, raw_dir: Path, out_dir: Path, table_format: str = "v1") -> dict:
     """Build chunks under an exclusive lock; every output file is replaced atomically.
 
     Raises LockHeld if another build holds `out_dir/.build.lock`.
     """
     with exclusive_lock(out_dir / LOCK_NAME):
-        return _build(manifest, raw_dir, out_dir)
+        return _build(manifest, raw_dir, out_dir, table_format)
 
 
-def _build(manifest: Manifest, raw_dir: Path, out_dir: Path) -> dict:
+def _build(manifest: Manifest, raw_dir: Path, out_dir: Path, table_format: str = "v1") -> dict:
     docs = []
     text_word_counts: list[int] = []
     with (
@@ -153,7 +153,7 @@ def _build(manifest: Manifest, raw_dir: Path, out_dir: Path) -> dict:
             strip_running_text(pages)
             drop_toc_pages(pages)
             dropped: list[tuple[str, Chunk]] = []
-            chunks = chunk_document(doc.id, pages, dropped)
+            chunks = chunk_document(doc.id, pages, dropped, table_format)
             for page in pages:  # page-level text for golden-set generation (not chunk text)
                 page_out.write(json.dumps(page_record(doc, page), ensure_ascii=False) + "\n")
             for chunk in chunks:
@@ -194,7 +194,7 @@ def _build(manifest: Manifest, raw_dir: Path, out_dir: Path) -> dict:
     totals["short_text_share"] = (
         round(short / len(text_word_counts), 3) if text_word_counts else 0.0
     )
-    summary = {"documents": docs, "totals": totals}
+    summary = {"table_format": table_format, "documents": docs, "totals": totals}
     with atomic_write(out_dir / "build_summary.json") as f:
         f.write(json.dumps(summary, indent=2) + "\n")
     return summary
