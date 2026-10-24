@@ -60,6 +60,11 @@ uv run python -m medquery.eval golden topup --batch topup2  # top-ups append to 
 uv run python -m medquery.eval golden freeze --version v1 --reviewer "..." [--exclude ids] [--check]
 uv run python -m medquery.eval run --split dev --config baseline   # resumable; writes medquery/eval/reports/
 uv run python -m medquery.eval judge-sample --run <run_id>          # judge_review_v1.csv for hand labels
+uv run python -m medquery.eval best-row --configs <names>          # best-row rule over completed dev runs
+uv run python -m medquery.eval ablation --split dev --configs <names>  # paired ablation report (clean tree, dev only)
+uv run python -m medquery.eval judge-sample --run <id> --version v2 --exclude-labelled v1  # fresh sample
+uv run python -m medquery.eval judge-review freeze --version v2 --labeller "..."
+uv run python -m medquery.eval judge-review measure --version v2 --judge judge_v2
 ```
 Tesseract with English data is required (`tesseract --list-langs` shows `eng`). CI installs Ubuntu's `tesseract-ocr`.
 Add a dependency with `uv add <pkg>` (runtime) or `uv add --dev <pkg>` (dev), and add it in the phase that first needs it.
@@ -79,7 +84,9 @@ Short chunks (under 30 words) are below the user's 8% threshold. The current rat
 - **Rows (dev only):** `baseline`, `hybrid`, `hybrid_rerank`, `hybrid_rerank_headers`, `hybrid_rerank_maxp` (post-hoc), then the best row at k = 8.
 - **Best-row rule** (`best-row --configs ...`, recorded in the ablation report): highest dev answer correctness; ties broken by the lower false-abstention rate. Every k = 5 row is a candidate, including MaxP.
 - **Comparisons:** paired bootstrap against the previous row; a k = 8 row against its k = 5 config; MaxP against the same config with truncated reranker input. Guards: `abstention_recall` and `citation_accuracy`.
-- **Then:** the ablation report, the fresh judge sample `judge_review_v2` (25 claims, 10 answers, excluding v1-labelled units), and STOP for the user's labels.
+- **Done (2026-10-24):** all six dev runs (44/44 each, reports committed); ablation report `medquery/eval/reports/2026-10-24_ablation_dev_9d8744145a.md`. The best row by the rule is `hybrid_rerank_headers_maxp` (run `a14cd47892bd`): answer correctness 0.941, false abstention 0.029. Real paired gains: `hybrid` vs `baseline` (correctness +0.176, false abstention -0.147) and headers vs `hybrid_rerank` (recall@5 +0.118, MRR +0.135). Reranker retrieval costs about 10-20 s per query on CPU.
+- **Awaiting the user's labels:** `medquery/eval/golden/judge_review_v2.csv` (25 claims, 10 answers from run `a14cd47892bd`; no probes needed; 36 claims and 20 answers labelled in v1 excluded). Verdicts are hidden in `judge_review_v2.key.json`.
+- **After labelling:** `judge-review freeze --version v2 --labeller "..."` (agreement for gpt-6.1-sol/judge_v1), then `judge-review measure --version v2 --judge judge_v2` (fresh validation of judge_v2), README ablation table from the report, push, CI.
 **Phase 2 Part B2 (2026-10-22):** judge switched to OpenAI `gpt-6.1-sol` with `judge_v1`, at the user's decision.
 - **Hand labels:** `labels` (v1, `ca799c8b…`), then `labels_r2` (`8d2ee727…`). r2 corrects r022, r027, r028 and r050 after the user re-checked them.
 - **Measurements on r2** (raw counts use matched units only):
