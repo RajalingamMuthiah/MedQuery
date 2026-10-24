@@ -10,7 +10,7 @@ Requires [uv](https://docs.astral.sh/uv/) and [Tesseract OCR](https://github.com
 
 ```powershell
 uv sync
-Copy-Item .env.example .env   # then add your ANTHROPIC_API_KEY
+Copy-Item .env.example .env   # then add GROQ_API_KEY (generator) and OPENAI_API_KEY (judge)
 uv run pytest
 ```
 
@@ -76,6 +76,41 @@ Sources:
 
 The baseline's main weakness is **false abstention**: it declines answerable questions that its top-5 dense retrieval doesn't surface (recall@5 is about 0.6–0.7). Phase 3's retrieval upgrades target this.
 
+### Retrieval upgrades (Phase 3, dev only)
+Cumulative rows on the 44 dev questions (34 answerable). The generator, prompt `answer_v1`, judge (`gpt-6.1-sol`, `judge_v1`) and golden set are the same in every row. The test split was not run. Every number below is copied from [2026-10-24_ablation_dev_9d8744145a.md](medquery/eval/reports/2026-10-24_ablation_dev_9d8744145a.md), produced from a clean commit by:
+
+```powershell
+uv run python -m medquery.eval ablation --split dev --configs baseline hybrid hybrid_rerank hybrid_rerank_headers hybrid_rerank_headers_maxp hybrid_rerank_headers_maxp_k8
+```
+
+| Row | Retrieval | Answer correctness | False-abstention rate | Recall@5 | MRR | Retrieval latency p50 / p95 |
+|---|---|---|---|---|---|---|
+| `baseline` | dense top 5 | 0.735 [0.588, 0.864] | 0.206 [0.086, 0.364] | 0.662 | 0.481 | 8 ms / 12 ms |
+| `hybrid` | + BM25, RRF (k = 60) | 0.912 [0.828, 0.985] | 0.059 [0.000, 0.143] | 0.779 | 0.533 | 14 ms / 29 ms |
+| `hybrid_rerank` | + bge-reranker-base over the top 20 | 0.882 [0.763, 0.972] | 0.118 [0.028, 0.237] | 0.765 | 0.549 | 9.9 s / 12.4 s |
+| `hybrid_rerank_headers` | + title and section headers on index text | 0.941 [0.857, 1.000] | 0.059 [0.000, 0.143] | 0.882 | 0.684 | 11.0 s / 15.7 s |
+| `hybrid_rerank_headers_maxp` (post-hoc) | reranker scores 320-token windows (overlap 96), max per passage | 0.941 [0.857, 1.000] | 0.029 [0.000, 0.088] | 0.897 | 0.660 | 20.4 s / 27.3 s |
+| `hybrid_rerank_headers_maxp_k8` | the best row, 8 passages to the generator | 0.926 [0.838, 1.000] | 0.029 [0.000, 0.088] | 0.897 | 0.660 | 16.7 s / 21.5 s |
+
+How to read it:
+- **Paired bootstrap.** Each row is compared with the previous row on the same questions (a k = 8 row with its k = 5 config, the MaxP row with the same config truncating its input); 1,000 resamples, seed 0. A difference counts as real only if its 95% CI excludes 0.
+- **Real gains:** `hybrid` over `baseline` (answer correctness +0.176 [0.062, 0.309]; false-abstention rate -0.147 [-0.281, -0.054]), and headers over `hybrid_rerank` (recall@5 +0.118 [0.014, 0.244]; MRR +0.135 [0.040, 0.239]). No other step changed a metric measurably.
+- **The reranker adds 10–20 s per query on CPU with no measurable accuracy gain.** `hybrid_rerank` vs `hybrid` shows no real difference in any metric. Without windowing, 34.9% of its inputs (41.9% with headers) exceed bge-reranker-base's 512-token limit and are truncated.
+- **MaxP was added after seeing the dev truncation**, so it is a post-hoc row. It removes truncation (0 of 1,713 inputs) but changes no metric measurably, and roughly doubles reranker latency.
+- **k = 8** changed no metric measurably; on the 5 multi-chunk questions, 4 already had both gold passages in context at k = 5.
+- **Guards:** abstention recall (unanswerable questions declined) is 1.000 in every row. Citation accuracy drifts from 0.871 (baseline) to 0.740 (k = 8), but no single step's drop is real.
+- **Best row by the stated rule** (highest answer correctness, ties broken by the lower false-abstention rate): `hybrid_rerank_headers_maxp`. But `hybrid`'s answer correctness (0.912) lies inside the 95% CI of every later row, at under 0.2% of their retrieval latency.
+
+### Judge re-validation on a fresh sample (Phase 3)
+A second sample, `judge_review_v2`, was drawn from the best dev run: 25 claims and 10 answers, none of them in the first sample, hand-labelled by Rajalingam Muthiah without seeing the judge's verdicts. All claims are natural (no probes were needed).
+
+| Judge | Claim agreement [95% CI] | Claim kappa | Natural unsupported caught | Natural supported wrongly rejected | Answer agreement [95% CI] | Answer kappa |
+|---|---|---|---|---|---|---|
+| `gpt-6.1-sol` + `judge_v1` (in use) | 0.840 [0.680, 0.960] | 0.519 | 3 of 3 | 4 of 22 | 0.900 [0.700, 1.000] | 0.630 |
+| `gpt-6.1-sol` + `judge_v2` | 0.680 [0.480, 0.840] | 0.296 | 3 of 3 | 8 of 22 | 0.900 [0.700, 1.000] | 0.630 |
+
+From `medquery/eval/golden/judge_review_v2.measure_judge_v1_gpt-6.1-sol_v1.json` and `…measure_judge_v2_gpt-6.1-sol_v1.json` (`uv run python -m medquery.eval judge-review measure --version v2 --judge <judge_v1|judge_v2>`). judge_v2's fresh validation is worse than judge_v1, so judge_v1 stays.
+
 ### Metric definitions
 Every quality metric has a 95% percentile bootstrap CI: 1,000 resamples over questions, seed 0. "Judge" means OpenAI `gpt-6.1-sol` with prompt `judge_v1`, used as an LLM judge (one call per answered question). Claim support is decided only from the retrieved passages, and the reference answer is used only for correctness.
 
@@ -107,9 +142,10 @@ Gold evidence is stored as (document, page, quote), never as chunk ids. Each quo
 - **Quiz content is kept but labelled.** The Core Curriculum's "Knowledge Check" items are unanswered questions, and some state false claims on purpose. They are stored as `kind = "quiz"` and excluded from retrieval by default.
 - **OCR errors remain in scanned text.** Examples are dropped decimal points and misread years. Each chunk carries its OCR confidence.
 - **The golden set was reviewed by an AI, not by a person.** golden_v1 (67 questions) was written by `qwen/qwen3.8-27b`, then pre-reviewed by Claude (Anthropic) against the source PDFs. No human hand-check is recorded. Some strata are thin: only 2 tuberculosis unanswerable questions and 3 superseded ones. Treat per-stratum results as indicative.
-- **The LLM judge is only partly validated.** Natural answers rarely contain unsupported claims: the hand-labelled sample has 3. So Cohen's kappa on natural claims is unstable, with confidence intervals spanning most of 0 to 1, and the raw catch count (how many human-flagged unsupported claims the judge also flagged) is reported alongside it. Probe claims are easy cases and overstate agreement on their own.
+- **The LLM judge is only partly validated.** Natural answers rarely contain unsupported claims: each hand-labelled sample has 3. So Cohen's kappa on natural claims is unstable, with confidence intervals spanning most of 0 to 1, and the raw catch count (how many human-flagged unsupported claims the judge also flagged) is reported alongside it. Probe claims are easy cases and overstate agreement on their own.
 - **The judge runs at temperature 1.** The judge is OpenAI `gpt-6.1-sol`, which only accepts its default temperature. Judge outputs are cached, so re-running a report reproduces it exactly. A stability check (the same labelled set judged with a second seed) changed 0 of 39 claim verdicts and 0 of 20 answer verdicts.
-- **judge_v2's exact-match rule was written after seeing these hand labels,** so its measurement on them is optimistic. On gpt-6.1-sol it gave no measured gain over judge_v1, which is the prompt in use. judge_v2 will be re-validated on a fresh labelled sample in Phase 3.
-- **The judge is strict on interpretive claims.** On natural claims, the judge rejected 2 that the labeller marked supported. Each was a part of the answer that went beyond the passage wording (for example "the primary driver"). Faithfulness and hallucination rate may therefore be slightly pessimistic.
+- **judge_v2's exact-match rule was written after seeing the first sample's labels.** On the fresh second sample it wrongly rejected 8 of 22 supported claims, against 4 of 22 for judge_v1, so judge_v1 remains the prompt in use.
+- **The judge is stricter than the labeller on supported claims.** judge_v1 wrongly rejected 2 of 23 natural supported claims in the first sample and 4 of 22 in the fresh one, while catching every claim the labeller marked unsupported (3 of 3 in each). Faithfulness and claim hallucination rate are therefore pessimistic: on the fresh sample, more of the judge's "unsupported" verdicts were false rejections (4) than true catches (3).
+- **The reranker is slow on CPU.** bge-reranker-base via ONNX on CPU adds about 10–20 s per query (20 s with MaxP windows). A GPU or a smaller reranker would be needed before it is worth using live, and on dev it gave no measurable accuracy gain.
 - **Small samples.** 44 dev and 23 test questions give wide confidence intervals. Differences between configurations smaller than the CIs shouldn't be read as real.
 - **Small, US-focused corpus.** It has three topics and ten documents, mostly from US federal agencies.
