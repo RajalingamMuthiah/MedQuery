@@ -304,14 +304,24 @@ def cmd_run(split: str, config_name: str) -> int:
     rid = run_id(config, split, golden_meta["sha256"], chunks_sha)
     run_dir = RUNS_DIR / rid
     print(f"run {rid}: config {config.name}, split {split}, golden {golden_meta['version']}")
-    phase4 = budget.is_phase4({"generator_provider": config.generator_provider})
-    if phase4:
+    if split == "test":  # once each: a finished test run is never run (or re-reported) again
+        total = sum(1 for i in items if i["split"] == "test")
+        if len(load_records(run_dir / "items.jsonl")) >= total > 0:
+            print(
+                f"refused: {config.name} already has a complete test run ({rid}); test runs "
+                "happen once"
+            )
+            return 1
+    metered = budget.is_metered({"generator_provider": config.generator_provider})
+    if metered:
         done = len(load_records(run_dir / "items.jsonl"))
         todo = sum(1 for i in items if i["split"] == split) - done
         check = budget.check(RUNS_DIR, rid, todo)
         print(check.line())
         if not check.ok:
-            print("refused: this run could take the Phase 4 judge spend past the cap")
+            print(
+                f"refused: this run could take the {budget.CURRENT_PHASE} judge spend past the cap"
+            )
             return 1
     try:
         retriever = build_retriever(
@@ -346,10 +356,10 @@ def cmd_run(split: str, config_name: str) -> int:
         agreement,
         history=judge_history(),
         notes=[
-            f"Phase 4 judge spend so far (all Phase 4 runs, this one included): "
-            f"${budget.spent(RUNS_DIR):.2f} of the ${budget.PHASE4_CAP_USD:.2f} cap"
+            f"{budget.CURRENT_PHASE} judge spend so far (all {budget.CURRENT_PHASE} runs, this one "
+            f"included): ${budget.spent(RUNS_DIR):.2f} of the ${budget.CAP_USD:.2f} cap"
         ]
-        if phase4
+        if metered
         else None,
     )
     for path in written:
@@ -547,10 +557,13 @@ def cmd_provider_check(config_names: list[str]) -> int:
     return 0
 
 
-def cmd_ablation(split: str, config_names: list[str], provider_check: str = "") -> int:
-    """Ablation report over completed runs of the given configs (dev only, clean tree)."""
-    if split != "dev":
-        print("refused: Phase 3 ablations use the dev split only")
+def cmd_ablation(
+    split: str, config_names: list[str], provider_check: str = "", final: bool = False
+) -> int:
+    """Ablation report over completed runs of the given configs (clean tree). The test split
+    is only for the final headline table (--final), once every config has a complete test run."""
+    if split != "dev" and not final:
+        print("refused: ablations use the dev split; the test split needs --final")
         return 1
     git = git_state()
     if git["dirty"] is not False:
@@ -562,13 +575,13 @@ def cmd_ablation(split: str, config_names: list[str], provider_check: str = "") 
         return 1
     runs, golden_meta, chunks_sha = loaded
     options: dict = {}
-    if any(budget.is_phase4({"generator_provider": cfg.generator_provider}) for cfg, _, _ in runs):
+    if any(budget.is_metered({"generator_provider": cfg.generator_provider}) for cfg, _, _ in runs):
         options = {
             "title": "generation quality and the live config (Phase 4)",
             "reparse": True,
             "extra_lines": [
-                f"Phase 4 judge spend so far (all Phase 4 runs): ${budget.spent(RUNS_DIR):.2f} "
-                f"of the ${budget.PHASE4_CAP_USD:.2f} cap"
+                f"{budget.CURRENT_PHASE} judge spend so far (all {budget.CURRENT_PHASE} runs): "
+                f"${budget.spent(RUNS_DIR):.2f} of the ${budget.CAP_USD:.2f} cap"
             ],
             "row_notes": {},
         }
@@ -585,6 +598,17 @@ def cmd_ablation(split: str, config_names: list[str], provider_check: str = "") 
         from medquery.eval.report import REPORTS_DIR
 
         options["appendix"] = provider_check_section(REPORTS_DIR / f"{provider_check}.csv")
+    if final:
+        options["final"] = True
+        options["title"] = "FINAL RESULTS (headline, test split)"
+        n_test = sum(1 for r in runs[0][2])
+        answerable = sum(1 for r in runs[0][2] if r["answerable"])
+        options.setdefault("extra_lines", []).insert(
+            0,
+            f"**Headline results.** Each config ran on the test split exactly once, after every "
+            f"decision was made on dev; nothing was tuned after these results. The test split has "
+            f"{n_test} questions ({answerable} answerable), so confidence intervals are wide.",
+        )
     for path in write_ablation(runs, split, git, golden_meta, chunks_sha, **options):
         print(f"wrote {path.relative_to(paths.ROOT)}")
     return 0
@@ -820,6 +844,7 @@ def main(argv: list[str] | None = None) -> int:
         help="config names; '<name>+abstain' adds the offline abstention row after <name>",
     )
     abl.add_argument("--provider-check", default="", help="provider-check report stem to summarise")
+    abl.add_argument("--final", action="store_true", help="the final headline table on test")
     rc = sub.add_parser("risk-coverage", help="abstention by retrieval confidence (offline)")
     rc.add_argument("--run", required=True, help="run id (data/eval_runs/<id>)")
     dg = sub.add_parser("diagnose", help="failure diagnosis of a completed dev run")
@@ -860,7 +885,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.group == "judge-sample":
         return cmd_judge_sample(args.run, args.version, args.exclude_labelled)
     if args.group == "ablation":
-        return cmd_ablation(args.split, args.configs, args.provider_check)
+        return cmd_ablation(args.split, args.configs, args.provider_check, args.final)
     if args.group == "risk-coverage":
         return cmd_risk_coverage(args.run)
     if args.group == "diagnose":

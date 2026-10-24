@@ -136,6 +136,48 @@ def best_row(runs: list) -> tuple[int, list[dict]]:
     return best["index"], table
 
 
+def verifier_guards(records: list[dict], base: list[dict]) -> dict:
+    """How the verifier changed answers, against the same items without it (`base`): sentences
+    removed; over-removal = removed sentences whose matched judge claims (the judge's verdict on
+    the unverified answer) were all supported; missed = judge-unsupported claims left in the
+    verified answers."""
+    from medquery.eval.judge_review import matching_parts
+
+    by_id = {r["id"]: r for r in base}
+    out = {
+        "verified": 0,
+        "failed": 0,
+        "changed": 0,
+        "to_abstention": 0,
+        "removed": 0,
+        "removed_supported": 0,
+        "removed_unsupported": 0,
+        "removed_unmatched": 0,
+        "missed": 0,
+    }
+    for r in records:
+        v = r.get("verification")
+        if v is None:
+            continue
+        out["verified"] += 1
+        out["failed"] += v["failed"]
+        out["changed"] += bool(v["removed"])
+        out["to_abstention"] += bool(v["removed"]) and r["abstained"]
+        claims = (by_id.get(r["id"], {}).get("judge") or {}).get("claims", [])
+        for sentence in v["removed"]:
+            out["removed"] += 1
+            parts = matching_parts(sentence, claims)
+            if not parts:
+                out["removed_unmatched"] += 1
+            elif all(p["supported_by_context"] for p in parts):
+                out["removed_supported"] += 1
+            else:
+                out["removed_unsupported"] += 1
+        if r.get("judge"):
+            out["missed"] += sum(not c["supported_by_context"] for c in r["judge"]["claims"])
+    return out
+
+
 def gold_position(record: dict, k: int) -> str:
     """Where the best-ranked gold chunk sat: in the generator's k passages, retrieved but
     beyond k (within the top 10), or not in the top 10."""
@@ -438,6 +480,37 @@ def ablation_markdown(
         "Retrieval latency is measured live (query embedding, BM25, fusion, rerank); "
         "generation latency is the original API call's, from the cache."
     )
+    verified = [i for i, (_, _, recs) in enumerate(runs) if any("verification" in r for r in recs)]
+    if verified:
+        lines += [
+            "",
+            "## Verifier guards",
+            "",
+            "Over-removal = removed sentences whose matched judge claims (the judge's verdict on "
+            "the same answer before verification) were all supported. Missed = claims the judge "
+            "marks unsupported in the verified answers.",
+            "",
+            "| config vs base | answers verified | verifier failures | answers changed | turned "
+            "into abstentions | sentences removed | removed but judge-supported (over-removal) | "
+            "removed and judge-unsupported | removed, no judge claim matched | missed |",
+            "|---|---|---|---|---|---|---|---|---|---|",
+        ]
+        for i in verified:
+            base_cfg, _, base = runs[comparison_partner(i, runs)]
+            cfg, _, recs = runs[i]
+            g = verifier_guards(recs, base)
+            lines.append(
+                f"| `{cfg.name}` vs `{base_cfg.name}` | {g['verified']} | {g['failed']} | "
+                f"{g['changed']} | {g['to_abstention']} | {g['removed']} | "
+                f"{g['removed_supported']} | {g['removed_unsupported']} | "
+                f"{g['removed_unmatched']} | {g['missed']} |"
+            )
+            verify_s = [r["verification"]["verify_s"] for r in recs if r.get("verification")]
+            p = metrics.percentiles(verify_s)
+            lines.append(
+                f"Verifier latency for `{cfg.name}`: p50 {_fmt(p['p50'], 2)} s, "
+                f"p95 {_fmt(p['p95'], 2)} s per answer (included in end-to-end latency)."
+            )
     lines += appendix or []
     return "\n".join(lines) + "\n", csv_rows
 
@@ -450,12 +523,13 @@ def write_ablation(
     import hashlib
     import io
 
-    if split != "dev":
-        raise ValueError("ablations run on the dev split only")
+    final = options.pop("final", False)
+    if split != "dev" and not final:
+        raise ValueError("ablations run on the dev split only; the test split needs final=True")
     created = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
     md, csv_rows = ablation_markdown(runs, split, git, golden_meta, chunks_sha, created, **options)
     key = hashlib.sha256("|".join(rid for _, rid, _ in runs).encode()).hexdigest()[:10]
-    stem = f"{created[:10]}_ablation_{split}_{key}"
+    stem = f"{created[:10]}_{'final' if final else 'ablation'}_{split}_{key}"
     buffer = io.StringIO()
     writer = csv.DictWriter(
         buffer, fieldnames=["config", "metric", "value", "ci_low", "ci_high"], lineterminator="\n"

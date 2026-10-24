@@ -159,7 +159,7 @@ def test_ablation_cli_refuses_test_and_dirty_trees(monkeypatch, capsys):
     import medquery.eval.__main__ as cli
 
     assert cli.main(["ablation", "--split", "test", "--configs", "baseline"]) == 1
-    assert "dev split only" in capsys.readouterr().out
+    assert "needs --final" in capsys.readouterr().out
     monkeypatch.setattr(cli, "git_state", lambda: {"commit": "x", "dirty": True})
     assert cli.main(["ablation", "--split", "dev", "--configs", "baseline"]) == 1
     assert "clean, committed" in capsys.readouterr().out

@@ -156,7 +156,7 @@ def test_run_refuses_when_the_budget_would_be_exceeded(monkeypatch, capsys):
     import medquery.eval.__main__ as cli
 
     monkeypatch.setattr(
-        cli.budget, "check", lambda *a, **k: budget.BudgetCheck(2.9, 0.5, budget.PHASE4_CAP_USD)
+        cli.budget, "check", lambda *a, **k: budget.BudgetCheck(2.9, 0.5, budget.CAP_USD)
     )
     monkeypatch.setattr(cli, "sha256_file", lambda path: "x")  # no corpus needed (CI has none)
     monkeypatch.setattr(cli, "chunks_path", lambda corpus: cli.paths.ROOT / "pyproject.toml")
