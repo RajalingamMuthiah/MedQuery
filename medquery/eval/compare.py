@@ -22,12 +22,13 @@ PAIRED = [
     ("recall@5", metrics.recall_at(5)),
     ("mrr", metrics.mrr),
     ("false_abstention_rate", metrics.false_abstention_rate),
+    ("hallucination_rate", metrics.hallucination_rate),  # primary (Phase 4 lesson)
     # Guards: better retrieval must not make the system answer unanswerable questions or
     # cite less accurately.
     ("abstention_recall", metrics.abstention_recall),
     ("citation_accuracy", metrics.citation_accuracy),
 ]
-LOWER_IS_BETTER = {"false_abstention_rate"}
+LOWER_IS_BETTER = {"false_abstention_rate", "hallucination_rate"}
 SUMMARY = [
     ("answer_correctness", metrics.answer_correctness),
     ("faithfulness", metrics.faithfulness),
@@ -318,7 +319,8 @@ def ablation_markdown(
                 }
             )
     lines.append(
-        "For false_abstention_rate a negative difference is an improvement; for every other "
+        "For false_abstention_rate and hallucination_rate a negative difference is an "
+        "improvement; for every other "
         "metric, a positive one. abstention_recall (unanswerable questions where the system "
         "abstained) and citation_accuracy are guards: a real drop in either means better "
         "retrieval made the system answer unanswerable questions or cite less accurately."
@@ -630,7 +632,7 @@ def provider_check_section(csv_path: Path) -> list[str]:
     for r in real:
         direction = (
             "favours NVIDIA"
-            if (float(r["diff"]) > 0) != (r["metric"] in LOWER_IS_BETTER | {"hallucination_rate"})
+            if (float(r["diff"]) > 0) != (r["metric"] in LOWER_IS_BETTER)
             else "favours Groq"
         )
         lines.append(

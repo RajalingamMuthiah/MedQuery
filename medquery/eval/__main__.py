@@ -604,9 +604,14 @@ def _abstain_row(cfg, records):
     loo = abstain.leave_one_out(records, scores)
     derived = abstain.apply(records, scores, t)
     turned = sum(r.get("abstained_by_threshold", False) for r in derived)
+    rule = (
+        "the rule chose no threshold (answer all)"
+        if t == abstain.NO_THRESHOLD
+        else f"answers with top-1 dense cosine < {t:.4f} abstain"
+    )
     note = (
-        f"offline, no new calls: answers with top-1 dense cosine < {t:.4f} abstain "
-        f"({turned} answers turned into abstentions). Threshold chosen in-sample on dev, so "
+        f"offline, no new calls: {rule} ({turned} answers turned into abstentions). "
+        f"Threshold chosen in-sample on dev, so "
         f"optimistic; leave-one-out overall score {loo['overall']:.3f} vs in-sample "
         f"{abstain.overall(derived):.3f} (base row {abstain.overall(records):.3f})"
     )
