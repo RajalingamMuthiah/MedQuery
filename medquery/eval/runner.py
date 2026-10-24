@@ -35,8 +35,8 @@ class RunConfig:
     include_quiz: bool = False
     answer_prompt: str = f"{ANSWER_VERSION}:{ANSWER_HASH}"
     judge_prompt: str = prompt_id(JUDGE_VERSION)
-    # Phase 3 retrieval settings. At their defaults they are left out of the run id, so the
-    # Phase 2 baseline keeps its id and records.
+    # Settings added after Phase 2 (retrieval in Phase 3, provider in Phase 4). At their
+    # defaults they are left out of the run id, so earlier runs keep their ids and records.
     retriever: str = "dense"  # "dense" or "hybrid" (dense + BM25 with RRF)
     fuse_k: int = RRF_K
     rerank_model: str = ""
@@ -44,6 +44,8 @@ class RunConfig:
     headers: bool = False
     rerank_window: int = 0  # > 0: MaxP over windows of this many tokens; 0: truncate
     rerank_overlap: int = 0
+    # Phase 4: the generator's provider (same model id on Groq or NVIDIA).
+    generator_provider: str = "groq"
 
 
 RETRIEVAL_DEFAULTS = {
@@ -54,6 +56,7 @@ RETRIEVAL_DEFAULTS = {
     "headers": False,
     "rerank_window": 0,
     "rerank_overlap": 0,
+    "generator_provider": "groq",
 }
 # MaxP windows for bge-reranker-base's 512-token input: 320 passage tokens + the longest
 # header in the corpus (115 tokens) + the longest golden question (56) + 3 special tokens =
@@ -84,6 +87,11 @@ CONFIGS = {
         _HEADERS_MAXP, name="hybrid_rerank_headers_maxp_k8", k=8
     ),
     "baseline_k8": RunConfig(name="baseline_k8", k=8),
+    # Phase 4: the same retrieval with the generator on NVIDIA NIM (provider check).
+    "hybrid_nvidia": replace(_HYBRID, name="hybrid_nvidia", generator_provider="nvidia"),
+    "hybrid_rerank_headers_maxp_nvidia": replace(
+        _HEADERS_MAXP, name="hybrid_rerank_headers_maxp_nvidia", generator_provider="nvidia"
+    ),
 }
 
 
@@ -128,8 +136,8 @@ def _usage(completions: list[Completion]) -> dict:
     }
 
 
-def _cost(model: str, usage: dict) -> float:
-    return settings.cost_usd(model, usage["prompt_tokens"], usage["completion_tokens"])
+def _cost(model: str, usage: dict, provider: str = "") -> float:
+    return settings.cost_usd(model, usage["prompt_tokens"], usage["completion_tokens"], provider)
 
 
 def evaluate_item(
@@ -137,7 +145,15 @@ def evaluate_item(
 ) -> dict:
     hits, retrieval_s = retriever.retrieve(item["question"], config.recall_k)
     context = hits[: config.k]
-    result = answer_from_hits(item["question"], context, retrieval_s, llm, model=config.generator)
+    provider = config.generator_provider
+    result = answer_from_hits(
+        item["question"],
+        context,
+        retrieval_s,
+        llm,
+        model=config.generator,
+        provider=None if provider == RETRIEVAL_DEFAULTS["generator_provider"] else provider,
+    )
     evidence_map = []
     for e in item["evidence"]:
         mapped = mapper.map(Evidence(e["doc_id"], e["page"], e["quote"]))
@@ -193,7 +209,7 @@ def evaluate_item(
         "generation_usage": gen_usage,
         "judge_usage": judge_usage,
         "cost_usd": {
-            "generation": round(_cost(config.generator, gen_usage), 8),
+            "generation": round(_cost(config.generator, gen_usage, config.generator_provider), 8),
             "judge": round(_cost(config.judge, judge_usage), 8),
         },
     }

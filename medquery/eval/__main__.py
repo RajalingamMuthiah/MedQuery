@@ -8,6 +8,7 @@ import sys
 from collections import Counter
 
 from medquery import config, paths
+from medquery.eval import budget
 from medquery.eval.compare import BEST_ROW_RULE, best_row, write_ablation
 from medquery.eval.evidence import EvidenceMapper
 from medquery.eval.freeze import FreezeError, freeze, load_golden, sha256_file, write_frozen
@@ -285,6 +286,15 @@ def cmd_run(split: str, config_name: str) -> int:
     rid = run_id(config, split, golden_meta["sha256"], chunks_sha)
     run_dir = RUNS_DIR / rid
     print(f"run {rid}: config {config.name}, split {split}, golden {golden_meta['version']}")
+    phase4 = budget.is_phase4({"generator_provider": config.generator_provider})
+    if phase4:
+        done = len(load_records(run_dir / "items.jsonl"))
+        todo = sum(1 for i in items if i["split"] == split) - done
+        check = budget.check(RUNS_DIR, rid, todo)
+        print(check.line())
+        if not check.ok:
+            print("refused: this run could take the Phase 4 judge spend past the cap")
+            return 1
     try:
         retriever = build_retriever(
             config, load_chunks(include_quiz=config.include_quiz), FastEmbedder(config.embed_model)
@@ -315,6 +325,12 @@ def cmd_run(split: str, config_name: str) -> int:
         git,
         agreement,
         history=judge_history(),
+        notes=[
+            f"Phase 4 judge spend so far (all Phase 4 runs, this one included): "
+            f"${budget.spent(RUNS_DIR):.2f} of the ${budget.PHASE4_CAP_USD:.2f} cap"
+        ]
+        if phase4
+        else None,
     )
     for path in written:
         print(f"wrote {path.relative_to(paths.ROOT)}")

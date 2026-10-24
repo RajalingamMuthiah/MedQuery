@@ -175,6 +175,7 @@ def markdown(
     agreement: dict | None,
     created: str,
     history: list[dict] | None = None,
+    notes: list[str] | None = None,
 ) -> str:
     c, lat, cost = summary["counts"], summary["latency"], summary["cost"]
     dirty = "unknown" if git["dirty"] is None else ("DIRTY" if git["dirty"] else "clean")
@@ -187,6 +188,7 @@ def markdown(
         f"- Golden set: `{golden_meta['version']}` sha256 `{golden_meta['sha256']}` "
         f"({golden_meta['items']} items; reviewer: {golden_meta['reviewer']})",
         f"- Corpus: `data/processed/chunks.jsonl` sha256 `{chunks_sha}`",
+        *[f"- {note}" for note in notes or []],
         "",
         "## Config",
         "",
@@ -315,12 +317,23 @@ def write_report(
     agreement: dict | None,
     out_dir: Path = REPORTS_DIR,
     history: list[dict] | None = None,
+    notes: list[str] | None = None,
 ) -> list[Path]:
     created = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
     summary = summarize(records, config)
     stem = f"{created[:10]}_{config.name}_{split}_{run_id}"  # run id: never overwrite history
     md = markdown(
-        summary, config, split, run_id, golden_meta, chunks_sha, git, agreement, created, history
+        summary,
+        config,
+        split,
+        run_id,
+        golden_meta,
+        chunks_sha,
+        git,
+        agreement,
+        created,
+        history,
+        notes,
     )
     written = []
     for path, text in (

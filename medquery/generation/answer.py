@@ -49,9 +49,12 @@ def answer_from_hits(
     llm: LLM,
     *,
     model: str = config.GENERATOR_MODEL,
+    provider: str | None = None,
 ) -> Answer:
-    """Generate from already-retrieved passages (the eval runner retrieves 10, uses the top k)."""
-    completion = llm.complete(answer_messages(question, hits), model=model, **GENERATION)
+    """Generate from already-retrieved passages (the eval runner retrieves 10, uses the top k).
+    `provider` routes the model to a non-default provider (e.g. NVIDIA instead of Groq)."""
+    extra = {"provider": provider} if provider else {}
+    completion = llm.complete(answer_messages(question, hits), model=model, **GENERATION, **extra)
     text = completion.text.strip()
     return Answer(
         question=question,

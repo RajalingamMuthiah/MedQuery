@@ -15,7 +15,7 @@ Health-document question answering (RAG) with grounded citations, abstention and
 
 ## Stack
 Python 3.11 (managed by uv), FastAPI, pytest, ruff, pre-commit. Retrieval: BM25 plus dense embeddings (BGE-class model) in FAISS or local Qdrant, reciprocal rank fusion, then a cross-encoder reranker. Embeddings: `fastembed` (ONNX) with `BAAI/bge-small-en-v1.5`; numpy cosine index. LLMs go through the provider router in `medquery/llm/` (`openai` SDK; each model is mapped to its provider in `medquery/config.py`).
-- **Generator:** `openai/gpt-oss-20b` on **Groq** (`GROQ_API_KEY`).
+- **Generator:** `openai/gpt-oss-20b` on **Groq** (`GROQ_API_KEY`) through Phase 3; on **NVIDIA NIM** (`NVIDIA_API_KEY`, same model id) from Phase 4, chosen per run by `RunConfig.generator_provider`.
 - **Judge:** `gpt-6.1-sol` on **OpenAI** (`OPENAI_API_KEY`), prompt `judge_v1`. The model accepts only its default temperature, so `MODEL_OVERRIDES` omits `temperature` for it.
 - **Golden-set author:** `qwen/qwen3.8-27b` on Groq (preview; a one-time frozen generation only).
 - **Earlier judge:** `openai/gpt-oss-120b` on Groq, kept in the report history. Frontend: React, Vite and Tailwind. Packaging: Docker Compose and GitHub Actions.
@@ -91,6 +91,10 @@ Short chunks (under 30 words) are below the user's 8% threshold. The current rat
   - On r2, gpt-6.1-sol/judge_v2: claims 0.720 (kappa 0.390); wrongly rejected 7 of 21 (v1 labels: 0.680, 8 of 22). judge_v1 stays.
   - The judge is stricter than the labeller, so faithfulness and hallucination rate are pessimistic (README limitations).
 - **Next:** Phase 4, generation quality and the live config (brief: `docs/brief/phase4-prompt.md`). The plan is to be proposed. Candidates from the dev diagnosis: table chunks losing units (r031: 0.7 million read as 0.7%), citation accuracy drifted down (0.871 to 0.740, no single real step), and the judge's false rejections. Choose the live retrieval config with latency in mind: `hybrid` is within every later row's CI at ~14 ms, while the reranker costs 10-20 s per query on CPU.
+**Phase 4 (generation quality and the live config): in progress** (plan approved 2026-10-24; brief `docs/brief/phase4-prompt.md`).
+- **Provider switch:** generator on NVIDIA NIM (`https://integrate.api.nvidia.com/v1`, model `openai/gpt-oss-20b`). Probe 2026-10-24: the Groq settings return 200, but so does an unknown parameter (NIM ignores what it does not support); `reasoning_effort` is honoured; three temperature-0/seed-0 repeats were identical. No rate-limit headers (client limit 35 RPM, conservative), no reasoning-token breakdown in usage, some calls queue for over 60 s. NVIDIA generation is costed at $0 (free API-catalog credits, no list price).
+- **Judge budget:** Phase 4 runs (generator on NVIDIA) stop before starting if the phase's OpenAI judge spend plus the run's estimate (x1.5) would exceed $3 (`medquery/eval/budget.py`); every Phase 4 report prints the running total.
+- **Plan:** provider check (`hybrid`, `hybrid_rerank_headers_maxp` on NVIDIA; stop if any real difference), then cumulative rows `hybrid_headers` -> corpus v2 table fix -> `answer_v2` -> abstention by retrieval confidence (offline), dev only.
 **Phase 2 Part B2 (2026-10-22):** judge switched to OpenAI `gpt-6.1-sol` with `judge_v1`, at the user's decision.
 - **Hand labels:** `labels` (v1, `ca799c8b…`), then `labels_r2` (`8d2ee727…`). r2 corrects r022, r027, r028 and r050 after the user re-checked them.
 - **Measurements on r2** (raw counts use matched units only):
@@ -166,5 +170,7 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
 - Phase 3 (user request): the ablation report includes `abstention_recall` and `citation_accuracy` with paired differences, as guards.
 - Phase 3 (user request): the remaining dev runs run unattended in a detached PowerShell process, `data/scripts/phase3_runs.ps1` (git-ignored), logging to `data/logs/phase3_runs.log`. It checks the git tree is clean before each run and aborts otherwise, and commits each finished run's report locally (no push).
 - Phase 3 (user request): `judge-review freeze --reason` records why a label revision's rows were re-checked (`revision_reason` in the meta).
+- Phase 4 (brief): the generator moves from Groq to NVIDIA NIM (same model). Earlier runs keep their ids: `generator_provider` at its default (`groq`) is left out of the run id.
+- Phase 4 (user decisions): full table_v2 fix in one row; abstention operating point = max overall dev score with a leave-one-out estimate; citation parser normalises Unicode hyphens and fullwidth brackets, and Phase 4 reports re-parse citations for every row.
 - Phase 3: code changes made while a dev run was in progress went into a separate git worktree (branch `phase3-maxp`), then were fast-forwarded into main, so every report records the clean commit it ran from.
 - Phase 1 (local environment only): Tesseract's English model was missing, so `eng.traineddata` from tessdata_fast 4.1.0 was added to `%LOCALAPPDATA%\Tesseract-OCR\tessdata`.

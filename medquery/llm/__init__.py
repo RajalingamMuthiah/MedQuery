@@ -1,5 +1,5 @@
 """LLM access behind a provider interface. Use get_client(); it routes each model to its
-provider (Groq or OpenAI) as configured in medquery/config.py."""
+provider (Groq, NVIDIA or OpenAI) as configured in medquery/config.py."""
 
 import os
 
@@ -34,8 +34,12 @@ class Router:
     def __repr__(self) -> str:
         return f"Router(providers={sorted(self._clients)})"
 
-    def complete(self, messages: list[dict], *, model: str, **kwargs) -> Completion:
-        provider = self._provider_of(model)
+    def complete(
+        self, messages: list[dict], *, model: str, provider: str | None = None, **kwargs
+    ) -> Completion:
+        """`provider` picks the provider explicitly when a model id is served by more than one
+        (e.g. openai/gpt-oss-20b on Groq and NVIDIA); otherwise MODEL_PROVIDER decides."""
+        provider = provider or self._provider_of(model)
         if provider not in self._clients:
             key_env = config.PROVIDERS[provider]["key_env"]
             raise LLMError(
@@ -51,7 +55,9 @@ def get_client() -> Router:
     load_dotenv(paths.ROOT / ".env")
     keys = {name: os.environ.get(p["key_env"], "").strip() for name, p in config.PROVIDERS.items()}
     if not any(keys.values()):
-        raise LLMError("no API keys set: add GROQ_API_KEY and/or OPENAI_API_KEY to .env")
+        raise LLMError(
+            "no API keys set: add GROQ_API_KEY, NVIDIA_API_KEY or OPENAI_API_KEY to .env"
+        )
     secrets = tuple(k for k in keys.values() if k)
     clients = {}
     for name, key in keys.items():

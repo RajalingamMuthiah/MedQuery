@@ -285,7 +285,7 @@ def test_maxp_config_fields_change_the_run_id_only_when_set():
 
 def test_every_k5_candidate_has_a_k8_config_and_maxp_rows_window():
     for name, cfg in CONFIGS.items():
-        if cfg.k == 5:
+        if cfg.k == 5 and cfg.generator_provider == "groq":  # the Phase 3 candidates
             assert CONFIGS[f"{name}_k8"] == replace(cfg, name=f"{name}_k8", k=8)
     for name in ("hybrid_rerank_maxp", "hybrid_rerank_headers_maxp"):
         cfg = CONFIGS[name]

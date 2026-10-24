@@ -14,6 +14,13 @@ PROVIDERS = {
         # Headers show 10,000 RPM and 4M TPM for this key; we stay well below.
         "rate_limits": {"rpm": 500, "tpm": 400_000},
     },
+    "nvidia": {
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "key_env": "NVIDIA_API_KEY",
+        # Probe 2026-10-24: no rate-limit headers are returned, so this is a conservative
+        # client-side limit, not a documented one.
+        "rate_limits": {"rpm": 35, "tpm": 200_000},
+    },
 }
 API_KEY_ENV = PROVIDERS["groq"]["key_env"]  # kept for older call sites
 
@@ -27,6 +34,13 @@ JUDGE_MODEL = "gpt-6.1-sol"
 GOLDEN_AUTHOR_MODEL = "qwen/qwen3.8-27b"
 PREVIOUS_JUDGE_MODEL = "openai/gpt-oss-120b"  # Groq; kept for report history
 
+# NVIDIA NIM (Phase 4 generator provider, chosen per run by RunConfig.generator_provider).
+# Probe 2026-10-24: /v1/models lists "openai/gpt-oss-20b" (same id as Groq). The Groq request
+# (temperature 0, seed 0, reasoning_effort "low", max_completion_tokens 600) returns 200, but so
+# does an unknown parameter: NIM ignores what it does not support, so 200 proves nothing on its
+# own. reasoning_effort is honoured ("high" used 135 completion tokens vs 20 for "low"); three
+# repeats at temperature 0 / seed 0 were identical. Differences from Groq: no rate-limit headers,
+# usage has no reasoning-token breakdown, and some calls queue for over 60 s.
 MODEL_PROVIDER = {
     "openai/gpt-oss-20b": "groq",
     "openai/gpt-oss-120b": "groq",
@@ -43,9 +57,17 @@ PRICES = {
     "qwen/qwen3.8-27b": (0.80, 4.00),
     "gpt-6.1-sol": (2.00, 10.00),
 }
+# Per-provider prices that differ from PRICES (same model id on another provider).
+PROVIDER_PRICES = {
+    ("nvidia", "openai/gpt-oss-20b"): (0.0, 0.0),  # API catalog free credits; no list price
+}
 PRICE_SOURCES = {
     "groq": ("https://console.groq.com/docs/models", "2026-10-21"),
     "openai": ("https://developers.openai.com/api/docs/pricing", "2026-10-22"),
+    "nvidia": (
+        "https://build.nvidia.com (API catalog free credits, no per-token list price)",
+        "2026-10-24",
+    ),
 }
 PRICES_SOURCE = PRICE_SOURCES["groq"][0]  # kept for older call sites
 PRICES_DATE = PRICE_SOURCES["groq"][1]
@@ -60,9 +82,10 @@ def provider_of(model: str) -> str:
     return MODEL_PROVIDER[model]
 
 
-def cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """List-price cost of one call (completion tokens include reasoning tokens)."""
-    price_in, price_out = PRICES[model]
+def cost_usd(model: str, prompt_tokens: int, completion_tokens: int, provider: str = "") -> float:
+    """List-price cost of one call (completion tokens include reasoning tokens). A provider
+    with its own price for the model (PROVIDER_PRICES) overrides the model's list price."""
+    price_in, price_out = PROVIDER_PRICES.get((provider, model), PRICES[model])
     return (prompt_tokens * price_in + completion_tokens * price_out) / 1_000_000
 
 
