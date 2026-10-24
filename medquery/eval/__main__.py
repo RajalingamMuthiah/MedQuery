@@ -471,6 +471,31 @@ def cmd_best_row(config_names: list[str]) -> int:
     return 0
 
 
+def cmd_diagnose(run: str) -> int:
+    """Failure diagnosis of a completed dev run, with causes from the committed CSV."""
+    from medquery.eval import diagnose
+    from medquery.ingest.tables import table_stats
+
+    git = git_state()
+    if git["dirty"] is not False:
+        print("refused: diagnosis reports need a clean, committed git tree")
+        return 1
+    records = load_records(RUNS_DIR / run / "items.jsonl")
+    if not records:
+        print(f"no records for run {run}")
+        return 1
+    run_config = json.loads((RUNS_DIR / run / "run.json").read_text(encoding="utf-8"))
+    try:
+        rows = diagnose.join(diagnose.findings(records), diagnose.load_causes(run))
+    except diagnose.DiagnosisError as exc:
+        print(f"refused: {exc}")
+        return 1
+    stats = table_stats(load_chunks(include_quiz=True))
+    path = diagnose.write_diagnosis(run, run_config["config"]["name"], rows, stats, git)
+    print(f"wrote {path.relative_to(paths.ROOT)} ({len(rows)} findings)")
+    return 0
+
+
 def cmd_provider_check(config_names: list[str]) -> int:
     """Groq vs NVIDIA on the same retrieval configs (completed dev runs, clean tree)."""
     git = git_state()
@@ -687,6 +712,8 @@ def main(argv: list[str] | None = None) -> int:
     abl = sub.add_parser("ablation", help="paired comparison of completed dev runs")
     abl.add_argument("--split", choices=["dev", "test"], default="dev")
     abl.add_argument("--configs", nargs="+", choices=sorted(CONFIGS), required=True)
+    dg = sub.add_parser("diagnose", help="failure diagnosis of a completed dev run")
+    dg.add_argument("--run", required=True, help="run id (data/eval_runs/<id>)")
     pc = sub.add_parser("provider-check", help="Groq vs NVIDIA on completed dev runs")
     pc.add_argument("--configs", nargs="+", required=True, help="base configs (Groq names)")
     best = sub.add_parser("best-row", help="apply the best-row rule to completed dev runs")
@@ -724,6 +751,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_judge_sample(args.run, args.version, args.exclude_labelled)
     if args.group == "ablation":
         return cmd_ablation(args.split, args.configs)
+    if args.group == "diagnose":
+        return cmd_diagnose(args.run)
     if args.group == "provider-check":
         return cmd_provider_check(args.configs)
     if args.group == "best-row":

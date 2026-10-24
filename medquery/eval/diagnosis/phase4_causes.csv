@@ -1,0 +1,14 @@
+run_id,item_id,finding,claim_index,cause,note
+a14cd47892bd,g018,incorrect,,table_units,"Asked for Table 1a, which was not among the 5 passages; the answer read Table 1b and reported 0.7 million as 0.7%. It also wrote a malformed citation (fullwidth brackets, 3-digit id)."
+a14cd47892bd,g018,unsupported_claim,0,table_units,"0.7 (0.4-1.0) is in the 'Number in Millions' column of Table 1b, not a percentage."
+a14cd47892bd,g092,unsupported_claim,2,other_added_detail,"Weight loss: none of the 5 passages lists the specific lifestyle modifications; likely model knowledge. The answer also omits the superseded warning (answer_v1 rule 5)."
+a14cd47892bd,g092,unsupported_claim,3,other_added_detail,Reduced sodium: not in any of the 5 passages.
+a14cd47892bd,g092,unsupported_claim,4,other_added_detail,Increased potassium: not in any of the 5 passages.
+a14cd47892bd,g092,unsupported_claim,5,other_added_detail,Regular aerobic exercise: not in any of the 5 passages.
+a14cd47892bd,g092,unsupported_claim,6,other_added_detail,Moderation of alcohol intake: not in any of the 5 passages.
+a14cd47892bd,g092,unsupported_claim,7,other_added_detail,Smoking cessation: not in any of the 5 passages.
+a14cd47892bd,g077,unsupported_claim,8,wrong_citation,The claim is supported by another passage in the context but cites tb-core-curriculum:0316.
+a14cd47892bd,g022,unsupported_claim,1,multi_passage,"The population and period come from the other cited passage; hand label: supported (judge_review_v2 r030)."
+a14cd47892bd,g075,unsupported_claim,5,number_qualifier,"'Future TB testing' became 'future medical encounters'; hand label: supported (judge_review_v2 r009)."
+a14cd47892bd,g001,unsupported_claim,1,other_paraphrase,"Mechanism paraphrased beyond the passage wording; hand label: supported (judge_review_v2 r008)."
+a14cd47892bd,g031,false_abstention,,retrieval_miss,The gold chunk (htn-millionhearts:0014) is not in the top 10.
