@@ -1,0 +1,20 @@
+{
+  "version": "v2",
+  "created": "2026-10-24",
+  "labeller": "Rajalingam Muthiah (human)",
+  "labels": 35,
+  "csv_sha256": "af45dc27f94608f4088a962cbbb001ffd5e6e2e52c307507a12c5b492d6b48c1",
+  "run_id": "a14cd47892bd",
+  "split": "dev",
+  "judge_model": "gpt-6.1-sol",
+  "judge_prompt": "judge_v1:f3afa3a92213",
+  "probes": {
+    "method": "mismatched context: a dev answer re-judged against the passages retrieved for a dev question from a different topic",
+    "probe_answers": 0,
+    "probe_claims": 0,
+    "probe_claims_in_sample": 0,
+    "judge_calls": 0
+  },
+  "revision": "v1",
+  "sha256": "1c5d07a169a1d1e642afa80226c2754a447e0f536ce81713b545386e87dad3d5"
+}
