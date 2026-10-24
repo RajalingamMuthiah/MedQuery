@@ -80,16 +80,17 @@ Short chunks (under 30 words) are below the user's 8% threshold. The current rat
 - **Main baseline weakness:** false abstention on answerable questions that retrieval misses.
 - **Next:** Phase 3, retrieval upgrades (brief: `docs/brief/phase3-prompt.md`). BM25 with RRF, a reranker, then contextual chunk headers, as a cumulative ablation on **dev only**: the test split is not run in Phase 3. Each step is compared with paired bootstrap differences, and the phase ends with a fresh judge re-validation sample.
 
-**Phase 3 (retrieval upgrades): done (2026-10-24), awaiting approval.**
+**Phase 3 (retrieval upgrades): done and approved (2026-10-24).**
 - **Rows (dev only):** `baseline`, `hybrid`, `hybrid_rerank`, `hybrid_rerank_headers`, `hybrid_rerank_headers_maxp` (post-hoc; headers won), `hybrid_rerank_headers_maxp_k8`.
 - **Best-row rule** (`best-row --configs ...`, recorded in the ablation report): highest dev answer correctness; ties broken by the lower false-abstention rate. Every k = 5 row is a candidate, including MaxP.
 - **Comparisons:** paired bootstrap against the previous row; a k = 8 row against its k = 5 config; MaxP against the same config with truncated reranker input. Guards: `abstention_recall` and `citation_accuracy`.
 - **Done (2026-10-24):** all six dev runs (44/44 each, reports committed); ablation report `medquery/eval/reports/2026-10-24_ablation_dev_9d8744145a.md`. The best row by the rule is `hybrid_rerank_headers_maxp` (run `a14cd47892bd`): answer correctness 0.941, false abstention 0.029. Real paired gains: `hybrid` vs `baseline` (correctness +0.176, false abstention -0.147) and headers vs `hybrid_rerank` (recall@5 +0.118, MRR +0.135). Reranker retrieval costs about 10-20 s per query on CPU.
 - **Fresh judge sample `judge_review_v2`:** 25 natural claims and 10 answers from run `a14cd47892bd`, none in v1, hand-labelled by Rajalingam Muthiah without the key (labels sha256 `1c5d07a1…`).
-  - gpt-6.1-sol/judge_v1: claims 0.840 (kappa 0.519), answers 0.900 (kappa 0.630); natural unsupported caught 3 of 3; supported wrongly rejected 4 of 22 (r008, r009, r030, r031).
-  - gpt-6.1-sol/judge_v2: claims 0.680 (kappa 0.296); wrongly rejected 8 of 22. judge_v1 stays.
+  - **Labels r2** (`768e9c34…`, supersedes v1 `1c5d07a1…`): only r031 changed, to unsupported (the passage value 0.7 is in millions, not %). Meta records `revision_reason`: the re-check was prompted by a judge disagreement, so r2 may be biased toward the judge. Both sets are kept and reported.
+  - On r2, gpt-6.1-sol/judge_v1: claims 0.880 (kappa 0.658), answers 0.900 (kappa 0.630); natural unsupported caught 4 of 4; supported wrongly rejected 3 of 21 (r008, r009, r030). On v1 labels: 0.840 (kappa 0.519), 3 of 3, 4 of 22.
+  - On r2, gpt-6.1-sol/judge_v2: claims 0.720 (kappa 0.390); wrongly rejected 7 of 21 (v1 labels: 0.680, 8 of 22). judge_v1 stays.
   - The judge is stricter than the labeller, so faithfulness and hallucination rate are pessimistic (README limitations).
-- **Next:** Phase 4 (generation). Candidates from the dev diagnosis: citation accuracy drifted down (0.871 to 0.740, no single real step), and the judge's false rejections. Choose the live retrieval config with latency in mind: `hybrid` is within every later row's CI at ~14 ms, while the reranker costs 10-20 s per query on CPU.
+- **Next:** Phase 4, generation quality and the live config (brief: `docs/brief/phase4-prompt.md`). The plan is to be proposed. Candidates from the dev diagnosis: table chunks losing units (r031: 0.7 million read as 0.7%), citation accuracy drifted down (0.871 to 0.740, no single real step), and the judge's false rejections. Choose the live retrieval config with latency in mind: `hybrid` is within every later row's CI at ~14 ms, while the reranker costs 10-20 s per query on CPU.
 **Phase 2 Part B2 (2026-10-22):** judge switched to OpenAI `gpt-6.1-sol` with `judge_v1`, at the user's decision.
 - **Hand labels:** `labels` (v1, `ca799c8b…`), then `labels_r2` (`8d2ee727…`). r2 corrects r022, r027, r028 and r050 after the user re-checked them.
 - **Measurements on r2** (raw counts use matched units only):
@@ -164,5 +165,6 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
 - Phase 3 (**post-hoc row, user request**): `hybrid_rerank_maxp` (or `hybrid_rerank_headers_maxp`, the same with headers; both are defined and one runs) was added after dev showed 34.9% of `hybrid_rerank` inputs were truncated. It scores each passage as the max over 320-token windows (overlap 96), with the header on each window only if `hybrid_rerank_headers` beat `hybrid_rerank` by the best-row rule. The ablation report labels it post-hoc.
 - Phase 3 (user request): the ablation report includes `abstention_recall` and `citation_accuracy` with paired differences, as guards.
 - Phase 3 (user request): the remaining dev runs run unattended in a detached PowerShell process, `data/scripts/phase3_runs.ps1` (git-ignored), logging to `data/logs/phase3_runs.log`. It checks the git tree is clean before each run and aborts otherwise, and commits each finished run's report locally (no push).
+- Phase 3 (user request): `judge-review freeze --reason` records why a label revision's rows were re-checked (`revision_reason` in the meta).
 - Phase 3: code changes made while a dev run was in progress went into a separate git worktree (branch `phase3-maxp`), then were fast-forwarded into main, so every report records the clean commit it ran from.
 - Phase 1 (local environment only): Tesseract's English model was missing, so `eng.traineddata` from tessdata_fast 4.1.0 was added to `%LOCALAPPDATA%\Tesseract-OCR\tessdata`.

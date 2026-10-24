@@ -104,12 +104,15 @@ How to read it:
 ### Judge re-validation on a fresh sample (Phase 3)
 A second sample, `judge_review_v2`, was drawn from the best dev run: 25 claims and 10 answers, none of them in the first sample, hand-labelled by Rajalingam Muthiah without seeing the judge's verdicts. All claims are natural (no probes were needed).
 
-| Judge | Claim agreement [95% CI] | Claim kappa | Natural unsupported caught | Natural supported wrongly rejected | Answer agreement [95% CI] | Answer kappa |
-|---|---|---|---|---|---|---|
-| `gpt-6.1-sol` + `judge_v1` (in use) | 0.840 [0.680, 0.960] | 0.519 | 3 of 3 | 4 of 22 | 0.900 [0.700, 1.000] | 0.630 |
-| `gpt-6.1-sol` + `judge_v2` | 0.680 [0.480, 0.840] | 0.296 | 3 of 3 | 8 of 22 | 0.900 [0.700, 1.000] | 0.630 |
+| Judge | Labels | Claim agreement [95% CI] | Claim kappa [95% CI] | Natural unsupported caught | Natural supported wrongly rejected | Answer agreement [95% CI] | Answer kappa |
+|---|---|---|---|---|---|---|---|
+| `gpt-6.1-sol` + `judge_v1` (in use) | r2 (current) | 0.880 [0.760, 1.000] | 0.658 [0.233, 1.000] | 4 of 4 | 3 of 21 | 0.900 [0.700, 1.000] | 0.630 |
+| `gpt-6.1-sol` + `judge_v2` | r2 (current) | 0.720 [0.520, 0.880] | 0.390 [0.109, 0.719] | 4 of 4 | 7 of 21 | 0.900 [0.700, 1.000] | 0.630 |
+| `gpt-6.1-sol` + `judge_v1` | v1 (first labels) | 0.840 [0.680, 0.960] | 0.519 [0.000, 0.884] | 3 of 3 | 4 of 22 | 0.900 [0.700, 1.000] | 0.630 |
+| `gpt-6.1-sol` + `judge_v2` | v1 (first labels) | 0.680 [0.480, 0.840] | 0.296 [0.000, 0.606] | 3 of 3 | 8 of 22 | 0.900 [0.700, 1.000] | 0.630 |
 
-From `medquery/eval/golden/judge_review_v2.measure_judge_v1_gpt-6.1-sol_v1.json` and `…measure_judge_v2_gpt-6.1-sol_v1.json` (`uv run python -m medquery.eval judge-review measure --version v2 --judge <judge_v1|judge_v2>`). judge_v2's fresh validation is worse than judge_v1, so judge_v1 stays.
+- **Label revision r2 changes one row, r031,** from supported to unsupported: the passage's "0.7 (0.4–1.0)" is in millions, not a percentage. The re-check was prompted by a judge disagreement, and only disputed rows were re-checked, so r2 may be biased toward the judge. Both label sets are kept and both are reported.
+- From `medquery/eval/golden/judge_review_v2.measure_<judge>_gpt-6.1-sol_<r2|v1>.json` (`uv run python -m medquery.eval judge-review measure --version v2 --judge <judge_v1|judge_v2>` measures the latest labels). judge_v2's fresh validation is worse than judge_v1 on either label set, so judge_v1 stays.
 
 ### Metric definitions
 Every quality metric has a 95% percentile bootstrap CI: 1,000 resamples over questions, seed 0. "Judge" means OpenAI `gpt-6.1-sol` with prompt `judge_v1`, used as an LLM judge (one call per answered question). Claim support is decided only from the retrieved passages, and the reference answer is used only for correctness.
@@ -142,10 +145,12 @@ Gold evidence is stored as (document, page, quote), never as chunk ids. Each quo
 - **Quiz content is kept but labelled.** The Core Curriculum's "Knowledge Check" items are unanswered questions, and some state false claims on purpose. They are stored as `kind = "quiz"` and excluded from retrieval by default.
 - **OCR errors remain in scanned text.** Examples are dropped decimal points and misread years. Each chunk carries its OCR confidence.
 - **The golden set was reviewed by an AI, not by a person.** golden_v1 (67 questions) was written by `qwen/qwen3.8-27b`, then pre-reviewed by Claude (Anthropic) against the source PDFs. No human hand-check is recorded. Some strata are thin: only 2 tuberculosis unanswerable questions and 3 superseded ones. Treat per-stratum results as indicative.
-- **The LLM judge is only partly validated.** Natural answers rarely contain unsupported claims: each hand-labelled sample has 3. So Cohen's kappa on natural claims is unstable, with confidence intervals spanning most of 0 to 1, and the raw catch count (how many human-flagged unsupported claims the judge also flagged) is reported alongside it. Probe claims are easy cases and overstate agreement on their own.
+- **The LLM judge is only partly validated.** Natural answers rarely contain unsupported claims: the hand-labelled samples have 3 and 4. So Cohen's kappa on natural claims is unstable, with confidence intervals spanning most of 0 to 1, and the raw catch count (how many human-flagged unsupported claims the judge also flagged) is reported alongside it. Probe claims are easy cases and overstate agreement on their own.
 - **The judge runs at temperature 1.** The judge is OpenAI `gpt-6.1-sol`, which only accepts its default temperature. Judge outputs are cached, so re-running a report reproduces it exactly. A stability check (the same labelled set judged with a second seed) changed 0 of 39 claim verdicts and 0 of 20 answer verdicts.
-- **judge_v2's exact-match rule was written after seeing the first sample's labels.** On the fresh second sample it wrongly rejected 8 of 22 supported claims, against 4 of 22 for judge_v1, so judge_v1 remains the prompt in use.
-- **The judge is stricter than the labeller on supported claims.** judge_v1 wrongly rejected 2 of 23 natural supported claims in the first sample and 4 of 22 in the fresh one, while catching every claim the labeller marked unsupported (3 of 3 in each). Faithfulness and claim hallucination rate are therefore pessimistic: on the fresh sample, more of the judge's "unsupported" verdicts were false rejections (4) than true catches (3).
+- **judge_v2's exact-match rule was written after seeing the first sample's labels.** On the fresh second sample it wrongly rejected 7 of 21 supported claims, against 3 of 21 for judge_v1 (labels r2), so judge_v1 remains the prompt in use.
+- **The judge is stricter than the labeller on supported claims.** judge_v1 wrongly rejected 2 of 23 natural supported claims in the first sample and 3 of 21 in the fresh one, while catching every claim the labeller marked unsupported (3 of 3 and 4 of 4). Faithfulness and claim hallucination rate are therefore pessimistic: on the fresh sample, about as many of the judge's "unsupported" verdicts were false rejections (3) as true catches (4).
+- **Hand labels were corrected after seeing the judge's agreement report.** In both samples, revision r2 changed rows re-checked after the agreement report was shown: 4 rows in the first sample, and in the second only r031, whose re-check was prompted by a judge disagreement. Rows where labeller and judge agreed were not re-checked in the same way, so such corrections tend to move agreement toward the judge. The first label sets are kept, and both are reported.
+- **Table chunks can lose their units.** r031's claim misread a value from a table whose "Number in millions" header did not reach the passage, so the generator reported 0.7 million as 0.7%. Table headers and units are a Phase 4 target.
 - **The reranker is slow on CPU.** bge-reranker-base via ONNX on CPU adds about 10–20 s per query (20 s with MaxP windows). A GPU or a smaller reranker would be needed before it is worth using live, and on dev it gave no measurable accuracy gain.
 - **Small samples.** 44 dev and 23 test questions give wide confidence intervals. Differences between configurations smaller than the CIs shouldn't be read as real.
 - **Small, US-focused corpus.** It has three topics and ten documents, mostly from US federal agencies.
