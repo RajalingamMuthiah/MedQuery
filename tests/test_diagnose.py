@@ -100,3 +100,32 @@ def test_continuation_needs_next_page_same_doc_and_same_width():
     assert not is_continuation(a, table("e:2", 5, T1_CONT, doc="e"))  # another document
     assert not is_continuation(a, table("d:2", 5, "| x | y | z |"))  # different width
     assert not is_continuation(a, table("d:2", 5, T2))  # has its own caption
+
+
+def test_corpus_gate_checks_prose_and_evidence_pages():
+    prose = {
+        "id": "d:0001",
+        "doc_id": "d",
+        "section": "S",
+        "kind": "text",
+        "page_start": 2,
+        "page_end": 2,
+        "text": "Rifampin daily for 4 months.",
+    }
+    v1 = [prose, table("d:0002", 3, "| a | b |\n|---|---|\n| 1 | 26 .8 |")]
+    v2 = [prose, table("d:0002", 3, "| a | b |\n|---|---|\n| 1 | 26.8 |")]
+    golden = [
+        {
+            "evidence": [
+                {"doc_id": "d", "page": 3, "quote": "1 26 .8"},
+                {"doc_id": "d", "page": 2, "quote": "daily for 4 months"},
+            ]
+        }
+    ]
+    gate = diagnose.corpus_gate(v1, v2, golden)
+    assert gate["prose_identical"] and gate["same_gold_pages"]
+    assert gate["v2_mapping"] == {"exact": 2} and gate["evidence_quotes"] == 2
+    md = diagnose.diagnosis_markdown(
+        "r", "c", [], {"v1": {"x": 1}, "v2": {"x": 0}}, {"commit": "c", "dirty": False}, "t", gate
+    )
+    assert "| x | 1 | 0 |" in md and "## Corpus v2 gate" in md

@@ -510,8 +510,13 @@ def cmd_diagnose(run: str) -> int:
     except diagnose.DiagnosisError as exc:
         print(f"refused: {exc}")
         return 1
-    stats = table_stats(load_chunks(include_quiz=True))
-    path = diagnose.write_diagnosis(run, run_config["config"]["name"], rows, stats, git)
+    v1 = load_chunks(chunks_path("v1"), include_quiz=True)
+    stats, gate = {"v1": table_stats(v1)}, None
+    if chunks_path("v2").exists():
+        v2 = load_chunks(chunks_path("v2"), include_quiz=True)
+        stats["v2"] = table_stats(v2)
+        gate = diagnose.corpus_gate(v1, v2, load_golden("v1")[0])
+    path = diagnose.write_diagnosis(run, run_config["config"]["name"], rows, stats, git, gate=gate)
     print(f"wrote {path.relative_to(paths.ROOT)} ({len(rows)} findings)")
     return 0
 

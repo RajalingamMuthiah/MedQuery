@@ -88,9 +88,49 @@ def join(found: list[dict], causes: dict[tuple, dict]) -> list[dict]:
     return [f | causes[(f["item_id"], f["finding"], f["claim_index"])] for f in found]
 
 
+def corpus_gate(v1: list[dict], v2: list[dict], golden: list[dict]) -> dict:
+    """The corpus v2 gate: prose chunks identical to v1, and every gold quote mapped exactly to
+    chunks on the same pages as in v1."""
+    from medquery.eval.evidence import Evidence, EvidenceMapper
+
+    def prose(chunks):
+        return [
+            (c["doc_id"], c["section"], c["kind"], c["text"])
+            for c in chunks
+            if c["kind"] != "table"
+        ]
+
+    m1, m2 = EvidenceMapper(v1), EvidenceMapper(v2)
+    by1, by2 = {c["id"]: c for c in v1}, {c["id"]: c for c in v2}
+    statuses: Counter = Counter()
+    same_pages = True
+    for item in golden:
+        for e in item["evidence"]:
+            ev = Evidence(e["doc_id"], e["page"], e["quote"])
+            a, b = m1.map(ev), m2.map(ev)
+            statuses[b.status] += 1
+            pages_a = {(by1[c]["doc_id"], by1[c]["page_start"]) for c in a.chunk_ids}
+            pages_b = {(by2[c]["doc_id"], by2[c]["page_start"]) for c in b.chunk_ids}
+            same_pages &= pages_a == pages_b
+    return {
+        "prose_identical": prose(v1) == prose(v2),
+        "prose_chunks": len(prose(v1)),
+        "evidence_quotes": sum(statuses.values()),
+        "v2_mapping": dict(statuses),
+        "same_gold_pages": same_pages,
+    }
+
+
 def diagnosis_markdown(
-    run_id: str, config_name: str, rows: list[dict], stats: dict, git: dict, created: str
+    run_id: str,
+    config_name: str,
+    rows: list[dict],
+    stats: dict,
+    git: dict,
+    created: str,
+    gate: dict | None = None,
 ) -> str:
+    """stats: {corpus version: table statistics}."""
     dirty = "unknown" if git["dirty"] is None else ("DIRTY" if git["dirty"] else "clean")
     by_cause = Counter(r["cause"] for r in rows)
     lines = [
@@ -125,21 +165,38 @@ def diagnosis_markdown(
         )
     lines += [
         "",
-        "## Table chunks (corpus v1)",
+        "## Table chunks",
         "",
-        "| measure | chunks |",
-        "|---|---|",
-        *[f"| {k.replace('_', ' ')} | {v} |" for k, v in stats.items()],
+        "| measure | " + " | ".join(f"corpus {v}" for v in stats) + " |",
+        "|---|" + "---|" * len(stats),
+        *[
+            f"| {k.replace('_', ' ')} | " + " | ".join(str(s[k]) for s in stats.values()) + " |"
+            for k in next(iter(stats.values()))
+        ],
         "",
         "Continuation = a captionless table on the page after a table of the same document with "
-        "the same number of columns. The table_v2 fix targets every row of this table.",
+        "the same number of columns. Caption cut = the caption ends on a comma, hyphen or "
+        "function word. Multi-row header = header rows above numeric data (the table_v2 merge "
+        "rule). Words exclude table markup.",
     ]
+    if gate:
+        lines += [
+            "",
+            "## Corpus v2 gate",
+            "",
+            f"- Prose chunks identical to v1: {gate['prose_identical']} "
+            f"({gate['prose_chunks']} chunks)",
+            f"- Gold evidence quotes: {gate['evidence_quotes']}; v2 mapping: {gate['v2_mapping']}",
+            f"- Every quote maps to chunks on the same pages as in v1: {gate['same_gold_pages']}",
+        ]
     return "\n".join(lines) + "\n"
 
 
-def write_diagnosis(run_id, config_name, rows, stats, git, out_dir: Path = REPORTS_DIR) -> Path:
+def write_diagnosis(
+    run_id, config_name, rows, stats, git, out_dir: Path = REPORTS_DIR, gate: dict | None = None
+) -> Path:
     created = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
     path = out_dir / f"{created[:10]}_diagnosis_dev_{run_id}.md"
     with atomic_write(path) as f:
-        f.write(diagnosis_markdown(run_id, config_name, rows, stats, git, created))
+        f.write(diagnosis_markdown(run_id, config_name, rows, stats, git, created, gate))
     return path
