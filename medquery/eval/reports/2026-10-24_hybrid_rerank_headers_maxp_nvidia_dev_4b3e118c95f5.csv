@@ -1,0 +1,18 @@
+metric,value,ci_low,ci_high,over,definition
+answer_correctness,0.9117647058823529,0.8181818181818182,1.0,answerable,"judge vs reference: correct 1, partial 0.5, incorrect 0; abstained = 0"
+faithfulness,0.9296875,0.8472110215053763,0.9924298128342246,answered,"per answer, claims supported by retrieved passages / claims; mean"
+hallucination_rate,0.08333333333333333,0.012341915085817527,0.17647058823529413,answered,"unsupported claims / all claims, pooled"
+answer_relevancy,1.0,1.0,1.0,answered,judge rating 1-5 scaled to 0-1
+context_precision,0.6313725490196079,0.5176225490196078,0.743181508714597,answerable,rank-aware AP@k over the generator's passages; relevant = maps to a gold quote
+context_recall,0.8970588235294118,0.7972867398648649,0.9736842105263158,answerable,gold evidence items covered by the generator's passages
+recall@1,0.4117647058823529,0.2638706140350877,0.5571848739495798,answerable,gold chunks in the top 1 / gold
+recall@3,0.8088235294117647,0.6818181818181818,0.921875,answerable,gold chunks in the top 3 / gold
+recall@5,0.8970588235294118,0.7972867398648649,0.9736842105263158,answerable,gold chunks in the top 5 / gold
+recall@10,0.9411764705882353,0.8529411764705882,1.0,answerable,gold chunks in the top 10 / gold
+mrr,0.6602941176470588,0.5424272328548645,0.7699098671726754,answerable,1 / rank of the first gold chunk in the top 10
+citation_accuracy,0.8253968253968254,0.6734295280612245,0.9552321724709785,answered,"cited claims whose cited passages support them / cited claims, pooled"
+citation_validity,1.0,1.0,1.0,answered,citations naming a passage given to the generator / citations
+uncited_claim_share,0.125,0.0,0.3194444444444444,answered,claims with no citation
+abstention_accuracy,0.9545454545454546,0.8863636363636364,1.0,all,"abstain on unanswerable, answer on answerable"
+abstention_recall,1.0,1.0,1.0,unanswerable,unanswerable questions where the system abstained
+false_abstention_rate,0.058823529411764705,0.0,0.14285714285714285,answerable,answerable questions where the system abstained
