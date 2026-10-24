@@ -104,10 +104,11 @@ def drop_empty_columns(rows: list[list[str]]) -> list[list[str]]:
 
 def _is_header_row(row: list[str]) -> bool:
     """A header row has no numeric data: fewer than half of its filled cells after the first
-    column start with a number ('(95% CI)' and 'Number in Millions' are header text)."""
+    column start with a number ('(95% CI)' and 'Number in Millions' are header text). A row
+    with no filled cell after the first column is a section label, not a header."""
     cells = [c for c in row[1:] if c.strip()]
-    if not cells:
-        return True
+    if not cells:  # a section label ("Age in years") or a blank row ends the header
+        return False
     return sum(bool(_NUMERIC_CELL_RE.match(c.strip())) for c in cells) * 2 < len(cells)
 
 

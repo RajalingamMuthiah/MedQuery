@@ -123,3 +123,14 @@ def test_text_only_tables_keep_their_first_row_as_the_header():
     assert head == [rows[0]] and body == rows[1:]
     deep = [["Year", "Value"]] + [["text", "more text"]] * 5 + [["2018", "12.5"]]
     assert len(tables.split_header(deep)[0]) == 1  # first numeric row too far down
+
+
+def test_a_section_label_row_ends_the_header():
+    rows = [
+        ["", "Diagnosed diabetes"],
+        ["Characteristic", "Percentage"],
+        ["Age in years", ""],
+        ["18-44", "3.0 (2.6-3.6)"],
+    ]
+    head, body = tables.split_header(rows)
+    assert len(head) == 2 and body[0] == ["Age in years", ""]
