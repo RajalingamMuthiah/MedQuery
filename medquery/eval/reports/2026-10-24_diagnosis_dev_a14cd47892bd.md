@@ -1,7 +1,7 @@
 # MedQuery failure diagnosis: run `a14cd47892bd` (`hybrid_rerank_headers_maxp`, dev)
 
-- Created (UTC): 2026-10-24 11:08
-- Git commit: `d79532e0fd8340279898c42d400c8226a0e9b2cb` (clean working tree)
+- Created (UTC): 2026-10-24 11:15
+- Git commit: `5f95311d9dbb39cff006820ce7a4f2dcf12b8545` (clean working tree)
 - Causes: hand-assigned in `medquery/eval/diagnosis/phase4_causes.csv`; the findings come from the run's judge verdicts. No API calls.
 
 ## Findings by cause
@@ -34,18 +34,24 @@
 | g092 | superseded | unsupported_claim | Moderation of alcohol intake was recommended for individuals with prehypertension. | other: detail not in the passages | Moderation of alcohol intake: not in any of the 5 passages. |
 | g092 | superseded | unsupported_claim | Smoking cessation was recommended for individuals with prehypertension. | other: detail not in the passages | Smoking cessation: not in any of the 5 passages. |
 
-## Table chunks (corpus v1)
+## Table chunks
 
-| measure | chunks |
-|---|---|
-| chunks | 1133 |
-| table chunks | 207 |
-| no caption | 137 |
-| caption cut mid sentence | 5 |
-| continuation without caption or header | 50 |
-| multi row header | 29 |
-| all empty columns | 83 |
-| split decimals | 8 |
-| over 480 words | 8 |
+| measure | corpus v1 | corpus v2 |
+|---|---|---|
+| chunks | 1133 | 1145 |
+| table chunks | 207 | 219 |
+| no caption | 137 | 78 |
+| caption cut mid sentence | 5 | 0 |
+| continuation without caption or header | 50 | 0 |
+| multi row header | 29 | 15 |
+| all empty columns | 83 | 0 |
+| split decimals | 8 | 0 |
+| over 480 words | 8 | 2 |
 
-Continuation = a captionless table on the page after a table of the same document with the same number of columns. The table_v2 fix targets every row of this table.
+Continuation = a captionless table on the page after a table of the same document with the same number of columns. Caption cut = the caption ends on a comma, hyphen or function word. Multi-row header = header rows above numeric data (the table_v2 merge rule). Words exclude table markup.
+
+## Corpus v2 gate
+
+- Prose chunks identical to v1: True (926 chunks)
+- Gold evidence quotes: 71; v2 mapping: {'exact': 71}
+- Every quote maps to chunks on the same pages as in v1: True
