@@ -1,4 +1,4 @@
-"""Claim-level verification of a generated answer (Phase 5, prompt verify_v1).
+"""Claim-level verification of a generated answer (prompts verify_v1, verify_v2).
 
 One call per answered question to the generator model (never the judge model, so evaluation
 stays independent): each sentence is classified as a fact or a note and split into atomic
@@ -43,8 +43,22 @@ RETRY_MESSAGE = "Your reply was not valid ({error}). Reply again with the JSON o
 VERIFY_HASH = prompt_hash(VERIFY_SYSTEM, VERIFY_TEMPLATE, RETRY_MESSAGE)
 
 
-def verify_id() -> str:
-    return f"{VERIFY_VERSION}:{VERIFY_HASH}"
+# verify_v2 (Phase 6, live app): the same prompt text with a higher token limit, and an empty or
+# reasoning-only reply (no content) counts as a failed attempt at once. The settings are part
+# of its hash, so it is a separate version; verify_v1 and its hash are unchanged (Phase 5).
+VERIFY_V2_SETTINGS = {**VERIFY_SETTINGS, "max_tokens": 4000}
+VERIFY_V2_HASH = prompt_hash(
+    VERIFY_SYSTEM, VERIFY_TEMPLATE, RETRY_MESSAGE, json.dumps(VERIFY_V2_SETTINGS, sort_keys=True)
+)
+VERSIONS = {  # version -> (hash, settings, empty reply is a failure)
+    "verify_v1": (VERIFY_HASH, VERIFY_SETTINGS, False),
+    "verify_v2": (VERIFY_V2_HASH, VERIFY_V2_SETTINGS, True),
+}
+EMPTY_REPLY = "empty reply (no content; reasoning only)"
+
+
+def verify_id(version: str = VERIFY_VERSION) -> str:
+    return f"{version}:{VERSIONS[version][0]}"
 
 
 @dataclass
@@ -64,6 +78,19 @@ def verify_messages(question: str, hits: list[Hit], sentences: list[str]) -> lis
         passages=render_passages(hits), question=question, sentences=numbered
     )
     return [{"role": "system", "content": VERIFY_SYSTEM}, {"role": "user", "content": user}]
+
+
+def statuses(v: "Verification", n_sentences: int) -> list[str]:
+    """Per-sentence display status: supported, unsupported, note, or unverified (failed)."""
+    if v.failed:
+        return ["unverified"] * n_sentences
+    out = []
+    for s in v.sentences:
+        if s["kind"] == "note":
+            out.append("note")
+        else:
+            out.append("supported" if all(c["supported"] for c in s["claims"]) else "unsupported")
+    return out
 
 
 def validate(data: dict, n_sentences: int) -> list[dict]:
@@ -105,6 +132,7 @@ def verify(
     *,
     model: str = config.GENERATOR_MODEL,
     provider: str | None = None,
+    version: str = VERIFY_VERSION,
 ) -> Verification:
     """Verify one answer. One retry on an invalid reply; if that fails too, the original answer
     is kept unchanged and the failure is recorded (never silently)."""
@@ -113,6 +141,7 @@ def verify(
     sentences = split_sentences(answer)
     messages = verify_messages(question, hits, sentences)
     extra = {"provider": provider} if provider else {}
+    _, settings, empty_fails = VERSIONS[version]
     completions: list[Completion] = []
     error = ""
     for attempt in range(2):
@@ -120,11 +149,13 @@ def verify(
             messages,
             model=model,
             response_format={"type": "json_object"},
-            **VERIFY_SETTINGS,
+            **settings,
             **extra,
         )
         completions.append(completion)
         try:
+            if empty_fails and not completion.text.strip():
+                raise ValueError(EMPTY_REPLY)
             verdicts = validate(parse_json(completion.text), len(sentences))
             break
         except (ValueError, json.JSONDecodeError) as exc:

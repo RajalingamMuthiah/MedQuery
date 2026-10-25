@@ -168,3 +168,31 @@ def test_a_finished_test_run_is_never_run_again(monkeypatch, capsys):
     monkeypatch.setattr(cli, "load_records", lambda path: [{}] * 23)  # a complete test run
     assert cli.main(["run", "--split", "test", "--config", "baseline_nvidia"]) == 1
     assert "already has a complete test run" in capsys.readouterr().out
+
+
+# --- verify_v2 (live app) ---
+
+
+def test_verify_v2_is_a_new_version_and_v1_is_unchanged():
+    from medquery.verify.verifier import VERIFY_HASH as V1
+    from medquery.verify.verifier import VERSIONS
+
+    assert verify_id() == f"verify_v1:{V1}" and verify_id("verify_v1") == verify_id()
+    assert verify_id("verify_v2") != verify_id("verify_v1")
+    assert VERSIONS["verify_v2"][1]["max_tokens"] == 4000
+    assert CONFIGS["live_verify"].verifier == verify_id("verify_v1")  # Phase 5 records
+
+
+def test_verify_v2_treats_an_empty_reply_as_a_failure_and_reports_unverified():
+    from medquery.verify.verifier import statuses
+
+    llm = FakeVerifier("", "")
+    v = verify("q?", [], ANSWER, llm, version="verify_v2")
+    assert v.failed and "empty reply" in v.error and len(llm.requests) == 2
+    assert llm.requests[0][1]["max_tokens"] == 4000
+    assert statuses(v, 3) == ["unverified"] * 3
+    llm = FakeVerifier("", verdict(SUPPORTED, UNSUPPORTED, NOTE))
+    v = verify("q?", [], ANSWER, llm, version="verify_v2")
+    assert not v.failed and statuses(v, 3) == ["supported", "unsupported", "note"]
+    v1 = verify("q?", [], ANSWER, FakeVerifier("", ""))  # verify_v1: same failure, old message
+    assert v1.failed and "empty reply" not in v1.error
