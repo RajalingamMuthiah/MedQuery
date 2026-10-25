@@ -4,6 +4,37 @@ Question answering over public health documents, with cited answers, abstention 
 
 > **Not medical advice.** MedQuery answers only from its source documents and does not diagnose conditions or give dosing instructions. Always consult a qualified health professional.
 
+## Final results (test split)
+
+These are the headline numbers. Each config ran on the 23-question test split **exactly once**, after every design decision had been made on the dev split, and nothing was tuned after seeing them. Every number is copied from [2026-10-25_final_test_7e48e89de6.md](medquery/eval/reports/2026-10-25_final_test_7e48e89de6.md), produced from a clean commit:
+
+```powershell
+uv run python -m medquery.eval ablation --split test --final --configs baseline_nvidia hybrid_nvidia hybrid_headers_tables_answer_v2 live_verify
+```
+
+All rows use the same generator (`openai/gpt-oss-20b`, run on NVIDIA NIM for evaluation) and the same judge (`gpt-6.1-sol` with `judge_v1`). Values are given with their 95% bootstrap CI.
+
+| Config | Answer correctness | False-abstention rate | Hallucination rate | Citation accuracy | Recall@5 | End-to-end p50 / p95 |
+|---|---|---|---|---|---|---|
+| Baseline: dense top 5, `answer_v1` | 0.556 [0.333, 0.750] | 0.389 [0.188, 0.632] | 0.059 [0.000, 0.167] | 0.920 | 0.611 | 12.9 s / 71.6 s |
+| Hybrid: dense + BM25 with RRF | 0.667 [0.444, 0.882] | 0.222 [0.053, 0.438] | 0.125 [0.000, 0.321] | 0.857 | 0.722 | 2.9 s / 33.3 s |
+| **Live config**: hybrid + headers + table fix + `answer_v2` | **0.833 [0.656, 0.972]** | 0.111 [0.000, 0.286] | 0.158 [0.030, 0.346] | 0.842 | 0.750 | 1.9 s / 5.7 s |
+| Live config + claim verifier | 0.833 [0.656, 0.972] | 0.111 [0.000, 0.286] | 0.158 [0.030, 0.346] | 0.842 | 0.750 | 6.8 s / 21.5 s |
+
+Paired differences (each row against the one above it, on the same questions; 1,000 resamples, seed 0):
+- **Live config vs hybrid: answer correctness +0.167, 95% CI [0.029, 0.324]**. This is the one real difference on test.
+- Hybrid vs baseline: answer correctness +0.111 [0.000, 0.237] and false-abstention rate −0.167 [−0.353, 0.000]. Both fall just short of real.
+- **Verifier: no change on test.** It removed no sentences, 1 of its 16 verifications failed (that answer was kept unverified), and the judge still found 6 unsupported claims in the verified answers.
+- **Abstention recall is 1.000 in every row**: the system declined every unanswerable test question.
+
+**Read these with care:**
+- **The test split is small:** 23 questions, 18 of them answerable, so the CIs span 0.3 or more.
+- **Hallucination rate rises down the table** (0.059 → 0.158), but no step's change is real. The judge is also stricter than the human labeller: on a fresh hand-labelled sample it wrongly rejected 3 of 21 supported claims (see the judge re-validation below).
+- **The golden set was written by an LLM and reviewed by an AI,** not by a person.
+- **Generation runs on NVIDIA's free tier for evaluation**, which is slow and queues. The live app will generate on Groq (about 0.8 s per answer).
+
+The development history below (Phases 2–5, dev split) records how each choice was made. Dev results are not test results.
+
 ## Setup (PowerShell)
 
 Requires [uv](https://docs.astral.sh/uv/) and [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) with English language data (`tesseract --list-langs` must show `eng`).
@@ -219,5 +250,6 @@ Gold evidence is stored as (document, page, quote), never as chunk ids. Each quo
 - **The reranker is slow on CPU.** bge-reranker-base via ONNX on CPU adds about 10–20 s per query (20 s with MaxP windows). A GPU or a smaller reranker would be needed before it is worth using live, and on dev it gave no measurable accuracy gain.
 - **Evaluation and the live app use different generator providers.** From Phase 4, evaluation generates on NVIDIA NIM's free tier (12–16 s median per answer); the provider check found no change in the primary metrics against Groq, which the live app will use for speed.
 - **Phase 4 changes were not measurably better on 44 dev questions.** Headers, the table fix, answer_v2 and confidence-based abstention all have paired CIs that include 0. Small effects would need a larger dev set to detect.
+- **The claim verifier changed little.** On dev it removed one sentence (no over-removal); on test it removed none. It uses the generator model, which may be biased toward its own answers. gpt-oss sometimes returns empty content, so 3 of 32 dev and 1 of 16 test verifications failed and those answers were kept unverified.
 - **Small samples.** 44 dev and 23 test questions give wide confidence intervals. Differences between configurations smaller than the CIs shouldn't be read as real.
 - **Small, US-focused corpus.** It has three topics and ten documents, mostly from US federal agencies.
