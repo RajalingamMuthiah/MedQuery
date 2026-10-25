@@ -91,6 +91,13 @@ Short chunks (under 30 words) are below the user's 8% threshold. The current rat
   - On r2, gpt-6.1-sol/judge_v2: claims 0.720 (kappa 0.390); wrongly rejected 7 of 21 (v1 labels: 0.680, 8 of 22). judge_v1 stays.
   - The judge is stricter than the labeller, so faithfulness and hallucination rate are pessimistic (README limitations).
 - **Phase 4** followed (see below). **Next:** Phase 5, claim verification (brief to come); the final test-split runs happen once, at the end of Phase 5.
+**Phase 6b (frontend redesign): done (2026-10-25), awaiting approval** (brief `docs/brief/phase6b-ui-prompt.md`). Frontend only; no backend, API or evaluation changes.
+- Calm clinical design (one teal accent, slate neutrals, dark mode by system preference), hash routing (`#/`, `#/sources`, `#/about`), search-style empty state with topic chips and dev sample cards, question / answer card / sources list with the ask box pinned at the bottom, slim session-dismissible banner plus footer notice.
+- Numbered superscript citations ([1] [2], by first appearance) and a numbered Sources list (title, publisher, year, page, Superseded badge); both open the passage panel, and focus returns to the citation on close.
+- Abstention card "Not covered by the documents" (neutral, links to Sources); answer skeleton; friendly error messages with Retry (daily cap, per-minute limit, network, 503).
+- Verification: secondary button with "can take up to a minute", spinner and shimmer while checking, a coloured dot plus text label per sentence, a legend and a summary ("3 of 4 sentences supported").
+- About page: how it works, the headline test results (56% -> 83% correctness, false refusals 39% -> 11%, 100% of unanswerable questions declined), plain-language limitations.
+- No new dependencies (inline SVG icons); bundle 248 KB / 77 KB gzip (was 229 / 72). 10 frontend tests.
 **Phase 6 (API and web interface): done and approved (2026-10-25)** (plan approved 2026-10-25; brief `docs/brief/phase6-prompt.md`).
 - **Backend** `medquery/api/` (FastAPI): `/ask` (live config, generation on Groq), `/verify` (`verify_v2` on Groq, on demand), `/health`, `/documents`, `/samples` (dev only). Limits: 500-character questions, 6/min per IP, 60 Groq-calling requests/day shared (`data/api_usage.json`, cached repeats free), CORS to `MEDQUERY_CORS_ORIGIN`. Run: `uv run python -m medquery.api`.
 - **Frontend** `frontend/` (React 19, Vite 8, Tailwind 4, TypeScript 7, vitest). Run: `npm --prefix frontend run dev`. CI has a frontend job (npm ci, test, build) on Node 22.

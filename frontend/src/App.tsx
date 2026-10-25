@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ask,
   samples as loadSamples,
@@ -8,22 +8,33 @@ import {
   type Sample,
   type VerifyResponse,
 } from "./api";
-import { Answer, STATUS_STYLE } from "./components/Answer";
+import { About } from "./components/About";
+import { AbstentionCard, AnswerCard, AnswerSkeleton, ErrorCard, SourcesList } from "./components/AnswerCard";
+import { AskBox, EmptyState } from "./components/Ask";
+import { Banner, Footer, Header } from "./components/Layout";
 import { PassagePanel } from "./components/PassagePanel";
 import { Sources } from "./components/Sources";
+import { VerifyBar } from "./components/VerifyBar";
+import { numberCitations } from "./lib/citations";
+import { friendlyError } from "./lib/errors";
+import { useRoute } from "./lib/route";
 
-const NOTICE =
-  "Not medical advice. MedQuery answers only from its source documents and does not diagnose or give dosing instructions. Consult a qualified health professional.";
+interface OpenPassage {
+  passage: Passage;
+  sentence: number | null;
+}
 
 export default function App() {
-  const [page, setPage] = useState<"ask" | "sources">("ask");
+  const route = useRoute();
   const [question, setQuestion] = useState("");
+  const [asked, setAsked] = useState("");
   const [response, setResponse] = useState<AskResponse | null>(null);
   const [check, setCheck] = useState<VerifyResponse | null>(null);
-  const [open, setOpen] = useState<{ passage: Passage; sentence: number } | null>(null);
+  const [open, setOpen] = useState<OpenPassage | null>(null);
   const [busy, setBusy] = useState<"" | "ask" | "verify">("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ message: string; retry: () => void } | null>(null);
   const [sampleList, setSampleList] = useState<Sample[]>([]);
+  const trigger = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     loadSamples()
@@ -31,170 +42,103 @@ export default function App() {
       .catch(() => setSampleList([]));
   }, []);
 
-  async function submit(q: string) {
+  const submit = useCallback(async (q: string) => {
     if (!q.trim()) return;
+    setAsked(q.trim());
     setBusy("ask");
-    setError("");
+    setError(null);
     setCheck(null);
     setOpen(null);
+    setResponse(null);
     try {
       setResponse(await ask(q));
     } catch (e) {
-      setResponse(null);
-      setError((e as Error).message);
+      setError({ message: friendlyError(e), retry: () => void submit(q) });
     } finally {
       setBusy("");
     }
-  }
+  }, []);
 
   async function runCheck() {
     if (!response) return;
     setBusy("verify");
-    setError("");
+    setError(null);
     try {
-      setCheck(
-        await verify(response.question, response.answer, response.passages.map((p) => p.id)),
-      );
+      setCheck(await verify(response.question, response.answer, response.passages.map((p) => p.id)));
     } catch (e) {
-      setError((e as Error).message);
+      setError({ message: friendlyError(e), retry: () => void runCheck() });
     } finally {
       setBusy("");
     }
   }
 
+  const openPassage = (passage: Passage, sentence: number | null, from: HTMLElement) => {
+    trigger.current = from;
+    setOpen({ passage, sentence });
+  };
+  const closePassage = useCallback(() => {
+    setOpen(null);
+    trigger.current?.focus(); // back to the citation that opened it
+  }, []);
+
+  const sources = response ? numberCitations(response.sentences, response.passages) : [];
+  const highlightsFor = (o: OpenPassage): [number, number][] => {
+    if (!response) return [];
+    if (o.sentence !== null) return response.sentences[o.sentence]?.highlights[o.passage.id] ?? [];
+    return response.sentences.flatMap((s) => s.highlights[o.passage.id] ?? []);
+  };
+  const started = busy === "ask" || response !== null || error !== null;
+
   return (
-    <div className="mx-auto max-w-3xl px-4 pb-16">
-      <div role="note" className="sticky top-0 z-10 -mx-4 bg-amber-100 px-4 py-2 text-sm text-amber-950">
-        <strong>Not medical advice.</strong> {NOTICE.replace("Not medical advice. ", "")}
-      </div>
-      <header className="flex flex-wrap items-center justify-between gap-2 py-4">
-        <h1 className="text-xl font-bold">MedQuery</h1>
-        <nav aria-label="Main" className="flex gap-2">
-          {(["ask", "sources"] as const).map((p) => (
-            <button
-              key={p}
-              type="button"
-              aria-current={page === p ? "page" : undefined}
-              onClick={() => setPage(p)}
-              className={`rounded px-3 py-1 focus:outline-none focus:ring-2 focus:ring-blue-600 ${page === p ? "bg-slate-900 text-white" : "border border-slate-400"}`}
-            >
-              {p === "ask" ? "Ask" : "Sources"}
-            </button>
-          ))}
-        </nav>
-      </header>
-
-      {page === "sources" ? (
-        <Sources />
-      ) : (
-        <main className="space-y-4">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void submit(question);
-            }}
-            className="space-y-2"
-          >
-            <label htmlFor="question" className="block font-medium">
-              Ask about diabetes, hypertension or tuberculosis
-            </label>
-            <textarea
-              id="question"
-              value={question}
-              maxLength={500}
-              rows={3}
-              onChange={(e) => setQuestion(e.target.value)}
-              className="w-full rounded border border-slate-400 p-2 focus:outline-none focus:ring-2 focus:ring-blue-600"
-            />
-            <div className="flex items-center justify-between text-sm text-slate-600">
-              <span>{question.length}/500</span>
-              <button
-                type="submit"
-                disabled={busy !== "" || !question.trim()}
-                className="rounded bg-blue-800 px-4 py-2 text-white disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-600"
-              >
-                {busy === "ask" ? "Searching…" : "Ask"}
-              </button>
+    <div className="flex min-h-screen flex-col bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-1">
+        Skip to content
+      </a>
+      <Banner />
+      <Header route={route} />
+      <main id="main" className="mx-auto w-full max-w-4xl flex-1 px-4">
+        {route === "sources" && <Sources />}
+        {route === "about" && <About />}
+        {route === "ask" && !started && (
+          <EmptyState question={question} setQuestion={setQuestion} onAsk={(q) => void submit(q)} busy={busy !== ""} samples={sampleList} />
+        )}
+        {route === "ask" && started && (
+          <div className="mx-auto max-w-2xl space-y-5 pb-32 pt-8">
+            {asked && <h1 className="text-2xl font-semibold tracking-tight">{asked}</h1>}
+            <div aria-live="polite" className="space-y-5">
+              {busy === "ask" && <AnswerSkeleton />}
+              {error && <ErrorCard message={error.message} onRetry={error.retry} />}
+              {response?.abstained && <AbstentionCard />}
+              {response && !response.abstained && (
+                <>
+                  <AnswerCard
+                    response={response}
+                    statuses={check?.sentences.map((s) => s.status)}
+                    checking={busy === "verify"}
+                    onCite={(p, i, el) => openPassage(p, i, el)}
+                  />
+                  <VerifyBar result={check} checking={busy === "verify"} disabled={busy !== ""} onCheck={() => void runCheck()} />
+                  <SourcesList response={response} onOpen={(p, el) => openPassage(p, null, el)} />
+                </>
+              )}
             </div>
-          </form>
-
-          {sampleList.length > 0 && !response && (
-            <section aria-labelledby="samples-title">
-              <h2 id="samples-title" className="text-sm font-medium text-slate-700">
-                Sample questions
-              </h2>
-              <ul className="mt-1 flex flex-wrap gap-2">
-                {sampleList.map((s) => (
-                  <li key={s.id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setQuestion(s.question);
-                        void submit(s.question);
-                      }}
-                      className="rounded border border-slate-400 bg-white px-2 py-1 text-left text-sm hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      {s.question}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {error && (
-            <p role="alert" className="rounded border border-red-700 bg-red-50 p-2 text-red-900">
-              {error}
-            </p>
-          )}
-
-          <div aria-live="polite">
-            {response && (
-              <div className="space-y-2">
-                <Answer
-                  response={response}
-                  statuses={check?.sentences.map((s) => s.status)}
-                  onCite={(passage, sentence) => setOpen({ passage, sentence })}
-                />
-                {!response.abstained && (
-                  <div className="flex flex-wrap items-center gap-3 text-sm">
-                    <button
-                      type="button"
-                      onClick={() => void runCheck()}
-                      disabled={busy !== ""}
-                      className="rounded border border-slate-500 px-3 py-1 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      {busy === "verify" ? "Checking…" : "Check this answer"}
-                    </button>
-                    {check && !check.verified && (
-                      <span className="rounded bg-amber-200 px-2 py-0.5 text-amber-950">
-                        Unverified: the check could not be completed
-                      </span>
-                    )}
-                    {check && (
-                      <span className="text-slate-600">
-                        {Object.values(STATUS_STYLE)
-                          .map((s) => s.label)
-                          .join(" · ")}
-                      </span>
-                    )}
-                    <span className="text-slate-600">
-                      retrieval {response.latency.retrieval_ms} ms · generation{" "}
-                      {response.latency.generation_s.toFixed(1)} s
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
-        </main>
+        )}
+      </main>
+      {route === "ask" && started && (
+        <div className="sticky bottom-0 z-10 border-t border-slate-200 bg-slate-50/90 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-950/90">
+          <div className="mx-auto max-w-2xl px-4">
+            <AskBox value={question} onChange={setQuestion} onSubmit={(q) => void submit(q)} busy={busy !== ""} />
+          </div>
+        </div>
       )}
-
+      <Footer />
       {open && (
         <PassagePanel
           passage={open.passage}
-          highlights={response?.sentences[open.sentence]?.highlights[open.passage.id] ?? []}
-          onClose={() => setOpen(null)}
+          number={sources.find((s) => s.passage.id === open.passage.id)?.number}
+          highlights={highlightsFor(open)}
+          onClose={closePassage}
         />
       )}
     </div>

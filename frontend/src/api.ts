@@ -61,6 +61,15 @@ export interface SourceDocument {
   url: string;
 }
 
+/** An error response from the API, with its HTTP status (network failures are plain Errors). */
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -68,7 +77,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body.error ?? `Request failed (${response.status})`);
+    throw new ApiError(response.status, body.error ?? `Request failed (${response.status})`);
   }
   return body as T;
 }
