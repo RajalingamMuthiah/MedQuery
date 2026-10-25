@@ -51,9 +51,31 @@ Requires [uv](https://docs.astral.sh/uv/) and [Tesseract OCR](https://github.com
 
 ```powershell
 uv sync
-Copy-Item .env.example .env   # then add GROQ_API_KEY and NVIDIA_API_KEY (generator) and OPENAI_API_KEY (judge)
+Copy-Item .env.example .env   # then add GROQ_API_KEY and NVIDIA_API_KEY (generator) and OPENAI_API_KEY (judge); the app needs only GROQ_API_KEY
 uv run pytest
 ```
+
+## Run the app (Phase 6)
+
+The web app serves the live config (hybrid retrieval + title/section headers + corpus v2 + `answer_v2`, no reranker), with generation on Groq. It needs `GROQ_API_KEY` in `.env`, and corpus v2 built locally (`uv run python -m medquery.ingest build --corpus v2`, after `download` and `build`).
+
+```powershell
+uv run python -m medquery.api          # backend:  http://127.0.0.1:8000
+npm --prefix frontend install          # first time only
+npm --prefix frontend run dev          # frontend: http://localhost:5173
+```
+
+- **`POST /ask`** returns the answer split into sentences, each with its citations and the cited passages: document, publisher, as-of year, a superseded flag, page, section and text, with a best-guess highlight of the cited span. It also returns retrieval and generation latency.
+- **`POST /verify`** is optional and runs only when you press "Check this answer". It uses claim verifier `verify_v2` on Groq to mark each sentence supported, unsupported, note, or unverified (the check failed). It never delays `/ask`.
+- **Other endpoints:** `GET /health`, `GET /documents` (the 10 sources and their licences), and `GET /samples` (dev-split questions only).
+- **Limits** protect the Groq free tier:
+  - questions are capped at 500 characters;
+  - 6 requests per minute per IP;
+  - 60 Groq-calling requests per day, shared by all users. Cached repeats don't count, and the count is kept in `data/api_usage.json` and resets at 00:00 UTC.
+
+  All are configurable in `.env` (see `.env.example`). Keys are read only from `.env` and are never logged or returned. Every response carries the not-medical-advice notice.
+- **Smoke test against the real Groq key** (local only, not in CI): `uv run python -m medquery.api.smoke`.
+- **Frontend tests:** `npm --prefix frontend test`. They also run in CI with the production build.
 
 ## Corpus and ingestion
 
