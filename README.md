@@ -27,6 +27,16 @@ Paired differences (each row against the one above it, on the same questions; 1,
 - **Verifier: no change on test.** It removed no sentences, 1 of its 16 verifications failed (that answer was kept unverified), and the judge still found 6 unsupported claims in the verified answers.
 - **Abstention recall is 1.000 in every row**: the system declined every unanswerable test question.
 
+**Summary comparison computed after the final runs; no tuning.** This compares the live config directly with the baseline, from the stored records of the same two test runs ([2026-10-25_summary_test_dacaeb434340_vs_ff63d760267f.md](medquery/eval/reports/2026-10-25_summary_test_dacaeb434340_vs_ff63d760267f.md), `summary-compare --split test --configs baseline_nvidia hybrid_headers_tables_answer_v2`):
+
+| Metric | Baseline | Live config | Difference [95% CI] | Real? |
+|---|---|---|---|---|
+| Answer correctness | 0.556 | 0.833 | +0.278 [0.118, 0.469] | **yes** |
+| False-abstention rate | 0.389 | 0.111 | −0.278 [−0.479, −0.100] | **yes** |
+| Hallucination rate | 0.059 | 0.158 | +0.099 [−0.030, 0.265] | no |
+
+**In the live app the claim verifier is off by default.** It changed nothing on test and adds latency. It stays available as an optional, asynchronous "check this answer" feature.
+
 **Read these with care:**
 - **The test split is small:** 23 questions, 18 of them answerable, so the CIs span 0.3 or more.
 - **Hallucination rate rises down the table** (0.059 → 0.158), but no step's change is real. The judge is also stricter than the human labeller: on a fresh hand-labelled sample it wrongly rejected 3 of 21 supported claims (see the judge re-validation below).
@@ -250,6 +260,7 @@ Gold evidence is stored as (document, page, quote), never as chunk ids. Each quo
 - **The reranker is slow on CPU.** bge-reranker-base via ONNX on CPU adds about 10–20 s per query (20 s with MaxP windows). A GPU or a smaller reranker would be needed before it is worth using live, and on dev it gave no measurable accuracy gain.
 - **Evaluation and the live app use different generator providers.** From Phase 4, evaluation generates on NVIDIA NIM's free tier (12–16 s median per answer); the provider check found no change in the primary metrics against Groq, which the live app will use for speed.
 - **Phase 4 changes were not measurably better on 44 dev questions.** Headers, the table fix, answer_v2 and confidence-based abstention all have paired CIs that include 0. Small effects would need a larger dev set to detect.
+- **Hallucination rate is not shown to improve on test.** It is 0.059 for the baseline and 0.158 for the live config, and no paired difference is real. The baseline's low rate partly reflects its 39% false refusals (0.389 false-abstention rate): an answer that is never given cannot contain unsupported claims.
 - **The claim verifier changed little.** On dev it removed one sentence (no over-removal); on test it removed none. It uses the generator model, which may be biased toward its own answers. gpt-oss sometimes returns empty content, so 3 of 32 dev and 1 of 16 test verifications failed and those answers were kept unverified.
 - **Small samples.** 44 dev and 23 test questions give wide confidence intervals. Differences between configurations smaller than the CIs shouldn't be read as real.
 - **Small, US-focused corpus.** It has three topics and ten documents, mostly from US federal agencies.
