@@ -346,3 +346,18 @@ def test_best_row_takes_correctness_then_lower_false_abstention():
     runs[3] = (CONFIGS["hybrid_rerank_headers_k8"], "d", records())
     md, _ = ablation_markdown(runs, "dev", GIT, GOLDEN, "c" * 64, "t")
     assert "`hybrid_rerank_headers_k8` is the chosen row at k = 8." in md
+
+
+def test_summary_compare_is_labelled_and_paired():
+    from medquery.eval.compare import summary_compare_markdown
+
+    md = summary_compare_markdown(
+        (CONFIGS["baseline_nvidia"], "a", records(correct=False)),
+        (CONFIGS["hybrid_headers_tables_answer_v2"], "b", records(correct=True)),
+        "test",
+        GIT,
+        "t",
+    )
+    assert "computed after the final runs; no tuning" in md
+    assert "| answer_correctness | 0.000 | 1.000 | +1.000 |" in md and "**yes**" in md
+    assert "hallucination_rate" in md and "false_abstention_rate" in md

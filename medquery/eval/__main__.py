@@ -484,6 +484,29 @@ def _completed_runs(split: str, config_names: list[str]):
     return runs, golden_meta, note
 
 
+def cmd_summary_compare(split: str, first: str, second: str) -> int:
+    """Paired comparison of two completed runs from their stored records (no new runs)."""
+    from datetime import UTC, datetime
+
+    from medquery.eval.compare import summary_compare_markdown
+    from medquery.eval.report import REPORTS_DIR
+
+    git = git_state()
+    if git["dirty"] is not False:
+        print("refused: summary comparisons need a clean, committed git tree")
+        return 1
+    loaded = _completed_runs(split, [first, second])
+    if loaded is None:
+        return 1
+    runs = loaded[0]
+    created = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
+    path = REPORTS_DIR / f"{created[:10]}_summary_{split}_{runs[0][1]}_vs_{runs[1][1]}.md"
+    with atomic_write(path) as f:
+        f.write(summary_compare_markdown(runs[0], runs[1], split, git, created))
+    print(f"wrote {path.relative_to(paths.ROOT)}")
+    return 0
+
+
 def cmd_best_row(config_names: list[str]) -> int:
     """Apply the best-row rule to completed dev runs (decides the k = 8 row)."""
     loaded = _completed_runs("dev", config_names)
@@ -851,6 +874,9 @@ def main(argv: list[str] | None = None) -> int:
     dg.add_argument("--run", required=True, help="run id (data/eval_runs/<id>)")
     pc = sub.add_parser("provider-check", help="Groq vs NVIDIA on completed dev runs")
     pc.add_argument("--configs", nargs="+", required=True, help="base configs (Groq names)")
+    sc = sub.add_parser("summary-compare", help="paired comparison of two finished runs")
+    sc.add_argument("--split", choices=["dev", "test"], required=True)
+    sc.add_argument("--configs", nargs=2, choices=sorted(CONFIGS), required=True)
     best = sub.add_parser("best-row", help="apply the best-row rule to completed dev runs")
     best.add_argument("--configs", nargs="+", choices=sorted(CONFIGS), required=True)
     jr = sub.add_parser("judge-review").add_subparsers(dest="action", required=True)
@@ -892,6 +918,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_diagnose(args.run)
     if args.group == "provider-check":
         return cmd_provider_check(args.configs)
+    if args.group == "summary-compare":
+        return cmd_summary_compare(args.split, *args.configs)
     if args.group == "best-row":
         return cmd_best_row(args.configs)
     if args.group == "golden" and args.action == "freeze":

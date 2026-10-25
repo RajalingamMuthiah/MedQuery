@@ -728,3 +728,42 @@ def provider_check_section(csv_path: Path) -> list[str]:
         "run on NVIDIA."
     )
     return lines
+
+
+SUMMARY_COMPARE_METRICS = [
+    ("answer_correctness", metrics.answer_correctness),
+    ("false_abstention_rate", metrics.false_abstention_rate),
+    ("hallucination_rate", metrics.hallucination_rate),
+]
+
+
+def summary_compare_markdown(first, second, split: str, git: dict, created: str) -> str:
+    """Paired bootstrap of two completed runs (config, run id, records) on the same questions,
+    computed from their stored records: no new runs and no tuning."""
+    (cfg_a, rid_a, recs_a), (cfg_b, rid_b, recs_b) = first, second
+    dirty = "unknown" if git["dirty"] is None else ("DIRTY" if git["dirty"] else "clean")
+    lines = [
+        f"# MedQuery summary comparison: `{cfg_b.name}` vs `{cfg_a.name}` ({split} split)",
+        "",
+        "**Summary comparison computed after the final runs; no tuning.** It reads the stored "
+        "records of two finished runs; nothing was run or changed for it.",
+        "",
+        f"- Created (UTC): {created}",
+        f"- Git commit: `{git['commit']}` ({dirty} working tree)",
+        f"- Runs: `{cfg_a.name}` `{rid_a}` and `{cfg_b.name}` `{rid_b}`",
+        f"- Paired bootstrap: {N_RESAMPLES} resamples of the same question ids, seed {SEED}; a "
+        "difference counts as **real** only if its 95% CI excludes 0.",
+        "",
+        f"| metric | `{cfg_a.name}` | `{cfg_b.name}` | difference | 95% CI | real? |",
+        "|---|---|---|---|---|---|",
+    ]
+    for name, fn in SUMMARY_COMPARE_METRICS:
+        a, b = fn(recs_a), fn(recs_b)
+        d, low, high = paired_bootstrap(recs_a, recs_b, fn)
+        real = "n/a" if low is None else ("**yes**" if low > 0 or high < 0 else "no")
+        diff = "n/a" if d is None else f"{d:+.3f}"
+        lines.append(f"| {name} | {_fmt(a)} | {_fmt(b)} | {diff} | {_ci(low, high)} | {real} |")
+    lines.append(
+        "For false_abstention_rate and hallucination_rate a negative difference is an improvement."
+    )
+    return "\n".join(lines) + "\n"
