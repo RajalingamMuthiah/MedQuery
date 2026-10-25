@@ -75,6 +75,7 @@ npm --prefix frontend run dev          # frontend: http://localhost:5173
 
   All are configurable in `.env` (see `.env.example`). Keys are read only from `.env` and are never logged or returned. Every response carries the not-medical-advice notice.
 - **Smoke test against the real Groq key** (local only, not in CI): `uv run python -m medquery.api.smoke`.
+- **"Check this answer" can take up to a minute.** Groq's free tier allows 8,000 tokens per minute. The client throttle reserves each request's full output limit (4,000 tokens for the verifier), so a check right after a few questions waits for the next minute.
 - **Frontend tests:** `npm --prefix frontend test`. They also run in CI with the production build.
 
 ## Corpus and ingestion
