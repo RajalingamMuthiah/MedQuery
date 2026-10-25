@@ -1,0 +1,18 @@
+metric,value,ci_low,ci_high,over,definition
+answer_correctness,0.8333333333333334,0.6561899038461539,0.9722222222222222,answerable,"judge vs reference: correct 1, partial 0.5, incorrect 0; abstained = 0"
+faithfulness,0.8177083333333334,0.6249387254901961,0.9687959558823529,answered,"per answer, claims supported by retrieved passages / claims; mean"
+hallucination_rate,0.15789473684210525,0.030280748663101625,0.346195652173913,answered,"unsupported claims / all claims, pooled"
+answer_relevancy,0.984375,0.9499342105263158,1.0,answered,judge rating 1-5 scaled to 0-1
+context_precision,0.5601851851851851,0.3774445304437564,0.7348596256684491,answerable,rank-aware AP@k over the generator's passages; relevant = maps to a gold quote
+context_recall,0.75,0.5277777777777778,0.9318560606060605,answerable,gold evidence items covered by the generator's passages
+recall@1,0.3888888888888889,0.1875,0.6111111111111112,answerable,gold chunks in the top 1 / gold
+recall@3,0.75,0.5277777777777778,0.9318560606060605,answerable,gold chunks in the top 3 / gold
+recall@5,0.75,0.5277777777777778,0.9318560606060605,answerable,gold chunks in the top 5 / gold
+recall@10,0.8333333333333334,0.6578536184210527,0.9722222222222222,answerable,gold chunks in the top 10 / gold
+mrr,0.5902777777777777,0.4228829656862745,0.7456140350877193,answerable,1 / rank of the first gold chunk in the top 10
+citation_accuracy,0.8421052631578947,0.653804347826087,0.9697192513368984,answered,"cited claims whose cited passages support them / cited claims, pooled"
+citation_validity,1.0,1.0,1.0,answered,citations naming a passage given to the generator / citations
+uncited_claim_share,0.0,0.0,0.0,answered,claims with no citation
+abstention_accuracy,0.9130434782608695,0.782608695652174,1.0,all,"abstain on unanswerable, answer on answerable"
+abstention_recall,1.0,1.0,1.0,unanswerable,unanswerable questions where the system abstained
+false_abstention_rate,0.1111111111111111,0.0,0.2857142857142857,answerable,answerable questions where the system abstained
