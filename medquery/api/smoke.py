@@ -5,6 +5,7 @@ Asks two dev questions and one dev unanswerable question through the real app, t
 first answer with /verify. Counts toward the daily cap like any other request."""
 
 import sys
+import time
 
 from fastapi.testclient import TestClient
 
@@ -16,8 +17,26 @@ def main() -> int:
     items, _ = load_golden("v1")
     samples = sample_questions(items)
     picks = samples[:2] + samples[-1:]  # two answerable dev questions, one unanswerable
-    client = TestClient(create_app())
-    print("health:", client.get("/health").json()["config"])
+    with TestClient(create_app()) as client:
+        return run(client, picks)
+
+
+def wait_ready(client: TestClient, timeout_s: float = 300) -> dict:
+    """Poll /health until the background warm start has finished (or failed)."""
+    started = time.monotonic()
+    while True:
+        health = client.get("/health").json()
+        if health["ready"] or health["status"] == "error" or time.monotonic() - started > timeout_s:
+            return health
+        time.sleep(1)
+
+
+def run(client: TestClient, picks: list[dict]) -> int:
+    health = wait_ready(client)
+    if not health["ready"]:
+        print(f"not ready: {health['status']} {health.get('error')}")
+        return 1
+    print("health:", health["config"])
     first = None
     for s in picks:
         r = client.post("/ask", json={"question": s["question"]})

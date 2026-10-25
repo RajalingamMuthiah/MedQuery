@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from medquery import config
+from medquery.api.answer_cache import AnswerCache, normalise
 from medquery.api.app import create_app, sample_questions
 from medquery.api.highlight import highlights
 from medquery.api.limits import DailyCap, RateLimiter
@@ -55,15 +56,52 @@ class FakeLLM:
             text = self.answer
         return Completion(text=text, model=kw["model"], finish_reason="stop", cached=self.cached)
 
+    def stream(self, messages, **kw):
+        llm = self
+
+        class Stream:
+            completion = None
+            first_token_s = None
+
+            def __iter__(self):
+                llm.calls.append(kw)
+                if llm.fail:
+                    raise llm.fail
+                words = llm.answer.split(" ")
+                for n, word in enumerate(words):
+                    if self.first_token_s is None:
+                        self.first_token_s = 0.25
+                    yield word if n == len(words) - 1 else word + " "
+                self.completion = Completion(
+                    text=llm.answer,
+                    model=kw["model"],
+                    finish_reason="stop",
+                    cached=llm.cached,
+                    latency_s=0.9,
+                )
+
+        return Stream()
+
+    def estimate_wait(self, messages, **kw):
+        self.calls.append({"estimate": True, **kw})
+        return 12.5
+
 
 def client(tmp_path, llm=None, **kw):
+    """Never touches data/: usage and answer cache live in tmp_path (the cache is off unless a
+    test passes one)."""
+    defaults = {
+        "rate_per_min": 100,
+        "daily_cap": 100,
+        "answer_cache": AnswerCache(None, enabled=False),
+    }
     app = create_app(
         retriever=FakeRetriever(),
         llm=llm or FakeLLM(),
         chunks=PASSAGES,
         golden=GOLDEN,
         usage_path=tmp_path / "usage.json",
-        **{"rate_per_min": 100, "daily_cap": 100, **kw},
+        **{**defaults, **kw},
     )
     return TestClient(app)
 
@@ -218,3 +256,146 @@ def test_documents_list_the_ten_manifest_documents(tmp_path):
 )
 def test_highlight_finds_the_matching_passage_segment(sentence, expected):
     assert highlights(sentence, TB["text"]) == expected
+
+
+# --- Phase 7: streaming, answer cache, warm start, wait estimate ---
+
+
+def events(response) -> list[tuple[str, dict]]:
+    out = []
+    for block in response.text.strip().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.splitlines())
+        out.append((lines["event"], json.loads(lines["data"])))
+    return out
+
+
+def test_stream_sends_retrieval_then_deltas_then_the_same_json_as_ask(tmp_path):
+    c = client(tmp_path)
+    streamed = events(c.post("/ask/stream", json={"question": "How is rifampin given?"}))
+    names = [name for name, _ in streamed]
+    assert names[0] == "retrieval" and names[-1] == "final" and names.count("delta") > 3
+    assert "".join(d["text"] for n, d in streamed if n == "delta") == ANSWER
+    final = streamed[-1][1]
+    plain = c.post("/ask", json={"question": "How is rifampin given?"}).json()
+    assert final["latency"]["ttft_s"] == 0.25 and plain["latency"]["ttft_s"] is None
+    for key in ("answer", "abstained", "sentences", "passages", "notice"):
+        assert final[key] == plain[key]
+
+
+def test_stream_of_an_abstention_ends_with_an_abstained_final(tmp_path):
+    streamed = events(
+        client(tmp_path, FakeLLM(answer=ABSTAIN_TEXT)).post(
+            "/ask/stream", json={"question": "Mars?"}
+        )
+    )
+    assert streamed[-1][0] == "final" and streamed[-1][1]["abstained"]
+
+
+def test_stream_reports_llm_failure_as_an_error_event(tmp_path):
+    streamed = events(
+        client(tmp_path, FakeLLM(fail=LLMError("down"))).post(
+            "/ask/stream", json={"question": "q?"}
+        )
+    )
+    assert streamed[-1][0] == "error" and "could not be reached" in streamed[-1][1]["error"]
+
+
+def test_answer_cache_hits_skip_retrieval_and_groq_and_the_daily_cap(tmp_path):
+    cache = AnswerCache(tmp_path / "answers.json")
+    llm = FakeLLM()
+    c = client(tmp_path, llm, answer_cache=cache, daily_cap=1)
+    first = c.post("/ask", json={"question": "How is rifampin given?"}).json()
+    assert not first["cached"] and len(llm.calls) == 1
+    again = c.post("/ask", json={"question": "  how IS rifampin given  "})  # same, normalised
+    assert again.status_code == 200 and again.json()["cached"] and len(llm.calls) == 1
+    streamed = events(c.post("/ask/stream", json={"question": "How is rifampin given?"}))
+    assert [n for n, _ in streamed] == ["final"] and streamed[0][1]["cached"]
+    assert c.post("/ask", json={"question": "A new question?"}).status_code == 429  # cap used
+    restarted = client(tmp_path, FakeLLM(), answer_cache=AnswerCache(tmp_path / "answers.json"))
+    assert restarted.post("/ask", json={"question": "how is rifampin given?"}).json()["cached"]
+
+
+def test_cache_hits_still_count_toward_the_per_ip_limit(tmp_path):
+    c = client(tmp_path, answer_cache=AnswerCache(None), rate_per_min=2)
+    codes = [c.post("/ask", json={"question": "q?"}).status_code for _ in range(3)]
+    assert codes == [200, 200, 429]
+
+
+def test_answer_cache_is_bounded_and_keyed_by_config():
+    cache = AnswerCache(None, max_entries=2)
+    for q in ("a", "b", "c"):
+        cache.put(q, "cfg", {"answer": q})
+    assert cache.get("a", "cfg") is None and cache.get("c", "cfg") == {"answer": "c"}
+    assert cache.get("c", "other-config") is None
+    assert normalise("  What  IS LTBI?! ") == "what is ltbi"
+
+
+def test_warm_start_reports_starting_then_ready(tmp_path):
+    import threading
+
+    gate, done = threading.Event(), threading.Event()
+
+    def loader(config):
+        gate.wait(5)
+        done.set()
+        return FakeRetriever(), PASSAGES, "sha"
+
+    app = create_app(
+        llm=FakeLLM(),
+        golden=GOLDEN,
+        loader=loader,
+        usage_path=tmp_path / "u.json",
+        answer_cache=AnswerCache(None, enabled=False),
+        rate_per_min=100,
+        daily_cap=100,
+    )
+    with TestClient(app) as c:
+        health = c.get("/health").json()
+        assert health["status"] == "starting" and health["ready"] is False
+        r = c.post("/ask", json={"question": "q?"})
+        assert r.status_code == 503 and "starting up" in r.json()["error"]
+        assert c.get("/samples").status_code == 200  # works before ready
+        gate.set()
+        done.wait(5)
+        for _ in range(50):
+            if c.get("/health").json()["ready"]:
+                break
+        assert c.get("/health").json()["config"]["corpus_sha256"] == "sha"
+        assert c.post("/ask", json={"question": "q?"}).status_code == 200
+
+
+def test_warm_start_failure_is_reported(tmp_path):
+    def loader(config):
+        raise RuntimeError("corpus v2 is missing")
+
+    app = create_app(
+        llm=FakeLLM(),
+        golden=GOLDEN,
+        loader=loader,
+        usage_path=tmp_path / "u.json",
+        answer_cache=AnswerCache(None, enabled=False),
+    )
+    with TestClient(app) as c:
+        for _ in range(50):
+            if c.get("/health").json()["status"] == "error":
+                break
+        assert "corpus v2 is missing" in c.get("/health").json()["error"]
+        assert "could not start" in c.post("/ask", json={"question": "q?"}).json()["error"]
+
+
+def test_verify_estimate_returns_the_wait_without_calling_or_counting(tmp_path):
+    llm = FakeLLM()
+    c = client(tmp_path, llm, daily_cap=1)
+    r = c.post("/verify/estimate", json=verify_body())
+    assert r.status_code == 200 and r.json()["wait_s"] == 12.5
+    call = llm.calls[-1]
+    assert call["estimate"] and call["expected_output_tokens"] == 600 and call["max_tokens"] == 4000
+    assert c.get("/health").json()["daily_remaining"] == 1
+
+
+def test_live_calls_book_expected_output_not_max_tokens(tmp_path):
+    llm = FakeLLM(verify_reply=GOOD)
+    c = client(tmp_path, llm)
+    c.post("/ask", json={"question": "q?"})
+    c.post("/verify", json=verify_body())
+    assert [k.get("expected_output_tokens") for k in llm.calls] == [400, 600]
