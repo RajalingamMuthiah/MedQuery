@@ -91,7 +91,7 @@ Short chunks (under 30 words) are below the user's 8% threshold. The current rat
   - On r2, gpt-6.1-sol/judge_v2: claims 0.720 (kappa 0.390); wrongly rejected 7 of 21 (v1 labels: 0.680, 8 of 22). judge_v1 stays.
   - The judge is stricter than the labeller, so faithfulness and hallucination rate are pessimistic (README limitations).
 - **Phase 4** followed (see below). **Next:** Phase 5, claim verification (brief to come); the final test-split runs happen once, at the end of Phase 5.
-**Phase 6 (API and web interface): done (2026-10-25), awaiting approval** (plan approved 2026-10-25; brief `docs/brief/phase6-prompt.md`).
+**Phase 6 (API and web interface): done and approved (2026-10-25)** (plan approved 2026-10-25; brief `docs/brief/phase6-prompt.md`).
 - **Backend** `medquery/api/` (FastAPI): `/ask` (live config, generation on Groq), `/verify` (`verify_v2` on Groq, on demand), `/health`, `/documents`, `/samples` (dev only). Limits: 500-character questions, 6/min per IP, 60 Groq-calling requests/day shared (`data/api_usage.json`, cached repeats free), CORS to `MEDQUERY_CORS_ORIGIN`. Run: `uv run python -m medquery.api`.
 - **Frontend** `frontend/` (React 19, Vite 8, Tailwind 4, TypeScript 7, vitest). Run: `npm --prefix frontend run dev`. CI has a frontend job (npm ci, test, build) on Node 22.
 - **verify_v2:** same prompt text as v1, `max_tokens` 4000, empty or reasoning-only replies count as failed attempts -> "unverified". `verify_v1` is unchanged for the Phase 5 records.
@@ -146,6 +146,12 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
   - All LLM calls go through the router, throttle, retries and disk cache in `medquery/llm/`. Eval runs are resumable.
 - **Judge measurements on frozen labels:** a different judge model splits claims differently. Each labelled claim maps to the re-extracted claims that make it up (`matching_parts`: content-word containment of at least 0.7, otherwise text similarity of at least 0.6). It is unsupported if any part is. Unmatched units are reported, never guessed.
 - **Crash-safe outputs:** use `medquery/fileio.py` for every generated artifact, including eval reports. `atomic_write(path)` writes to a temp file and then calls `os.replace()`, so a crash never leaves a half-written file. `exclusive_lock(path)` refuses to start a second run. The build locks `data/processed/.build.lock`. If a crash leaves the lock behind, delete it once you have checked no run is active. Never run two builds at once: overlapping runs corrupted `chunks.jsonl` once during Phase 1.
+
+### Carry-forward for Phase 7
+- **Verify wait (~60 s):** the client throttle reserves a request's full `max_tokens` (4000 for `verify_v2`) against Groq's 8K tokens/min, so a check right after a few asks waits for the next minute. Reserve the expected output tokens instead (e.g. the measured p95 completion tokens), and show an estimated wait in the UI.
+
+### Carry-forward for Phase 8 (deployment)
+- **Client IP behind a proxy:** `request.client.host` is the proxy's address, so the per-IP rate limit would be shared by all users. Read the client IP from `X-Forwarded-For` only when the request comes from a configured trusted proxy; otherwise keep `request.client.host`.
 
 ### Carry-forward for Phase 6 (live API)
 - **Verifier, if used:** run it on Groq and asynchronously (never blocking the answer); sentence-level verdicts drive a supported / unverified display, and an "unverified" badge shows when verification fails. gpt-oss sometimes returns empty content: 3 of 32 dev and 1 of 16 test verifications failed. On dev the empty replies came at 232, 550 and 2,047 completion tokens; the last is the total of two calls, so the 2,000-per-call cap was not clearly hit. A `verify_v2` with a higher `max_tokens` (and a check for reasoning-only replies) is the first thing to try.
