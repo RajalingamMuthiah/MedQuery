@@ -62,8 +62,14 @@ export function AnswerCard({ response, statuses, checking = false, onCite }: Ans
         })}
       </div>
       <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">
-        Retrieved in {Math.round(response.latency.retrieval_ms)} ms · generated in{" "}
-        {response.latency.generation_s.toFixed(1)} s
+        {response.cached ? (
+          <span data-testid="cached-label">Cached answer · shown instantly</span>
+        ) : (
+          <>
+            Retrieved in {Math.round(response.latency.retrieval_ms)} ms · generated in{" "}
+            {response.latency.generation_s.toFixed(1)} s
+          </>
+        )}
       </p>
     </article>
   );
@@ -72,6 +78,35 @@ export function AnswerCard({ response, statuses, checking = false, onCite }: Ans
 interface SourcesListProps {
   response: AskResponse;
   onOpen: (passage: Passage, trigger: HTMLElement) => void;
+}
+
+/** The answer as it streams in: plain text (citation markers hidden), replaced by the full card
+ * with numbered citations once the stream ends. */
+export function DraftAnswer({ text }: { text: string }) {
+  return (
+    <article
+      aria-label="Answer (still arriving)"
+      aria-busy="true"
+      className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-6"
+    >
+      <p className="text-[1.0625rem] leading-relaxed">
+        {stripCitations(text).replace(/\s*\[[^\]]*$/, "")}
+        <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse bg-teal-600 motion-reduce:animate-none" aria-hidden />
+      </p>
+    </article>
+  );
+}
+
+export function StartingUp({ message }: { message: string }) {
+  return (
+    <div
+      role="status"
+      className="mx-auto mt-6 flex max-w-2xl items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
+    >
+      <span className="h-2 w-2 animate-pulse rounded-full bg-teal-600 motion-reduce:animate-none" aria-hidden />
+      {message}
+    </div>
+  );
 }
 
 export function SourcesList({ response, onOpen }: SourcesListProps) {

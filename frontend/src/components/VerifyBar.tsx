@@ -8,9 +8,10 @@ interface Props {
   checking: boolean;
   disabled: boolean;
   onCheck: () => void;
+  waitS?: number | null; // estimated rate-limit wait before the check starts
 }
 
-export function VerifyBar({ result, checking, disabled, onCheck }: Props) {
+export function VerifyBar({ result, checking, disabled, onCheck, waitS = null }: Props) {
   return (
     <section aria-label="Check this answer" className="space-y-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -24,7 +25,11 @@ export function VerifyBar({ result, checking, disabled, onCheck }: Props) {
           {checking ? <Spinner /> : <CheckIcon />}
           {checking ? "Checking…" : "Check this answer"}
         </button>
-        <span className="text-xs text-slate-500 dark:text-slate-400">can take up to a minute</span>
+        <span className="text-xs text-slate-500 dark:text-slate-400">
+          {checking && waitS !== null
+            ? `Waiting about ${Math.ceil(waitS)} s for the rate limit, then checking…`
+            : "can take up to a minute"}
+        </span>
       </div>
       {result && (
         <div className="space-y-1 text-sm" aria-live="polite">
