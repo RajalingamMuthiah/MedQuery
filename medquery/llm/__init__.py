@@ -48,10 +48,29 @@ class Router:
         kwargs = {**kwargs, **self._overrides.get(model, {})}
         return self._clients[provider].complete(messages, model=model, **kwargs)
 
+    def _client(self, model: str, provider: str | None) -> LLMClient:
+        provider = provider or self._provider_of(model)
+        if provider not in self._clients:
+            key_env = config.PROVIDERS[provider]["key_env"]
+            raise LLMError(
+                f"{key_env} is not set: add it to .env to use {model} (see .env.example)"
+            )
+        return self._clients[provider]
 
-def get_client() -> Router:
+    def stream(self, messages: list[dict], *, model: str, provider: str | None = None, **kwargs):
+        kwargs = {**kwargs, **self._overrides.get(model, {})}
+        return self._client(model, provider).stream(messages, model=model, **kwargs)
+
+    def estimate_wait(
+        self, messages: list[dict], *, model: str, provider: str | None = None, **kwargs
+    ) -> float:
+        return self._client(model, provider).estimate_wait(messages, model=model, **kwargs)
+
+
+def get_client(cache: bool = True) -> Router:
     """Clients for every provider whose key is in .env, with throttling, retries and the
-    on-disk cache. Keys are never printed; each client redacts every configured key."""
+    on-disk cache (cache=False only for live latency measurement). Keys are never printed;
+    each client redacts every configured key."""
     load_dotenv(paths.ROOT / ".env")
     keys = {name: os.environ.get(p["key_env"], "").strip() for name, p in config.PROVIDERS.items()}
     if not any(keys.values()):
@@ -72,7 +91,7 @@ def get_client() -> Router:
                 timeout_s=provider.get("timeout_s", config.DEFAULT_TIMEOUT_S),
             ),
             provider=name,
-            cache=JsonCache(LLM_CACHE),
+            cache=JsonCache(LLM_CACHE) if cache else None,
             throttle_factory=lambda limits=limits: Throttle(**limits),
             secrets=secrets,
         )

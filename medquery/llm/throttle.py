@@ -25,10 +25,13 @@ def parse_duration(text: str) -> float | None:
     return sum(float(value) * _UNIT_S[unit] for value, unit in parts)
 
 
-def estimate_tokens(messages: list[dict], max_tokens: int) -> int:
-    """Conservative token estimate: about 3.5 characters per token, plus the output budget."""
+def estimate_tokens(messages: list[dict], max_tokens: int, expected: int | None = None) -> int:
+    """Conservative token estimate: about 3.5 characters per token, plus the output budget.
+
+    `expected` (Phase 7, live app) books the expected output instead of the full max_tokens;
+    without it the estimate is unchanged."""
     chars = sum(len(str(m.get("content", ""))) for m in messages)
-    return int(chars / 3.5) + max_tokens
+    return int(chars / 3.5) + (max_tokens if expected is None else expected)
 
 
 class Throttle:
@@ -63,6 +66,21 @@ class Throttle:
             delay = max(delay, 0.01)
             self._sleep(delay)
             waited += delay
+
+    def estimate_wait(self, tokens: int) -> float:
+        """Seconds acquire(tokens) would wait right now, without waiting or booking anything."""
+        now = self._clock()
+        events = [(t, n) for t, n in self._events if now - t < WINDOW_S]
+        wait = max(0.0, self._remote_block_until - now)
+        i = 0
+        while events[i:]:
+            live = events[i:]
+            used = sum(n for _, n in live)
+            if len(live) < self.rpm and used + tokens <= self.tpm:
+                break
+            wait = max(wait, live[0][0] + WINDOW_S - now)  # oldest booking expires
+            i += 1
+        return round(wait, 3)
 
     def update(self, headers: dict) -> None:
         """Honour the server's view: if its token budget is spent, wait for its reset."""

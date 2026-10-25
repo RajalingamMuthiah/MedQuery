@@ -261,3 +261,81 @@ def test_both_provider_keys_are_redacted_from_errors():
     with pytest.raises(LLMError) as info:
         client.complete(MESSAGES, model="m")
     assert SECRET not in str(info.value) and other not in str(info.value)
+
+
+# --- Phase 7: expected-output booking, wait estimate, streaming ---
+
+
+def test_expected_output_replaces_max_tokens_in_the_booking_only():
+    long = [{"role": "user", "content": "x" * 350}]  # 100 tokens of prompt
+    assert estimate_tokens(long, 4000) == 4100  # unchanged default (evaluation)
+    assert estimate_tokens(long, 4000, expected=600) == 700
+    transport = FakeTransport(ok())
+    client, _ = make_client(transport)
+    client.complete(MESSAGES, model="m", max_tokens=4000, expected_output_tokens=600)
+    assert transport.requests[0]["max_completion_tokens"] == 4000  # the request is unchanged
+    assert "expected_output_tokens" not in transport.requests[0]
+
+
+def test_estimate_wait_matches_what_acquire_would_wait_without_booking():
+    fake = FakeTime()
+    t = Throttle(30, 8000, clock=fake.clock, sleep=fake.sleep)
+    assert t.estimate_wait(5000) == 0.0
+    t.acquire(5000)
+    fake.now = 10.0
+    assert t.estimate_wait(2000) == 0.0
+    assert t.estimate_wait(4000) == 50.0  # the 5,000-token booking expires at 60 s
+    assert t.estimate_wait(4000) == 50.0  # estimating books nothing
+    assert t.acquire(4000) == pytest.approx(50.0)
+
+
+def test_low_booking_is_safe_a_429_is_retried():
+    rate_limited = TransportError(429, {"retry-after": "2"}, "rate limit: tokens per minute")
+    transport = FakeTransport(rate_limited, ok("fine"))
+    client, fake = make_client(transport)
+    result = client.complete(MESSAGES, model="m", max_tokens=4000, expected_output_tokens=600)
+    assert result.text == "fine" and fake.sleeps == [2.0]
+
+
+class StreamTransport(FakeTransport):
+    def __init__(self, deltas, headers=None, fail_first=None):
+        super().__init__()
+        self.deltas, self.headers, self.fail_first = deltas, headers or {}, fail_first
+
+    def send_stream(self, request):
+        self.requests.append(request)
+        if self.fail_first is not None:
+            error, self.fail_first = self.fail_first, None
+            raise error
+        chunks = [
+            {"model": "m", "choices": [{"delta": {"content": d}, "finish_reason": None}]}
+            for d in self.deltas
+        ]
+        chunks.append(
+            {
+                "model": "m",
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 3},
+            }
+        )
+        return iter(chunks), self.headers
+
+
+def test_stream_yields_deltas_and_caches_the_same_record_as_complete(tmp_path):
+    transport = StreamTransport(["Rif", "ampin ", "daily."])
+    client, _ = make_client(transport, tmp_path)
+    stream = client.stream(MESSAGES, model="m", expected_output_tokens=400)
+    assert list(stream) == ["Rif", "ampin ", "daily."]
+    assert stream.completion.text == "Rifampin daily." and not stream.completion.cached
+    assert stream.completion.usage["completion_tokens"] == 3 and stream.first_token_s is not None
+    again = client.complete(MESSAGES, model="m")  # same request: served from the stream's cache
+    assert again.cached and again.text == "Rifampin daily." and len(transport.requests) == 1
+    replay = client.stream(MESSAGES, model="m")
+    assert list(replay) == ["Rifampin daily."] and replay.completion.cached
+
+
+def test_stream_retries_a_failure_before_the_first_byte():
+    transport = StreamTransport(["ok"], fail_first=TransportError(None, {}, "APIConnectionError"))
+    client, fake = make_client(transport)
+    stream = client.stream(MESSAGES, model="m")
+    assert "".join(stream) == "ok" and len(fake.sleeps) == 1

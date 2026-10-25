@@ -26,6 +26,34 @@ class OpenAICompatTransport:
             raise TransportError(None, {}, type(exc).__name__) from None
         return raw.parse().model_dump(), dict(raw.headers)
 
+    def send_stream(self, request: dict):
+        """(iterator of chunk dicts, response headers) for a streamed completion."""
+        try:
+            raw = self._client.chat.completions.with_raw_response.create(
+                **request, stream=True, stream_options={"include_usage": True}
+            )
+        except openai.APIStatusError as exc:
+            raise TransportError(
+                exc.status_code, dict(exc.response.headers), _error_message(exc)
+            ) from None
+        except (openai.APITimeoutError, openai.APIConnectionError) as exc:
+            raise TransportError(None, {}, type(exc).__name__) from None
+        return _ChunkIterator(raw.parse()), dict(raw.headers)
+
+
+class _ChunkIterator:
+    """Stream chunks as dicts; connection errors mid-stream surface as TransportError."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def __iter__(self):
+        try:
+            for chunk in self._stream:
+                yield chunk.model_dump()
+        except (openai.APITimeoutError, openai.APIConnectionError) as exc:
+            raise TransportError(None, {}, type(exc).__name__) from None
+
 
 def _error_message(exc: openai.APIStatusError) -> str:
     body = exc.body if isinstance(exc.body, dict) else {}

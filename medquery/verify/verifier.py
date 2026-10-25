@@ -133,6 +133,7 @@ def verify(
     model: str = config.GENERATOR_MODEL,
     provider: str | None = None,
     version: str = VERIFY_VERSION,
+    expected_output_tokens: int | None = None,
 ) -> Verification:
     """Verify one answer. One retry on an invalid reply; if that fails too, the original answer
     is kept unchanged and the failure is recorded (never silently)."""
@@ -141,6 +142,8 @@ def verify(
     sentences = split_sentences(answer)
     messages = verify_messages(question, hits, sentences)
     extra = {"provider": provider} if provider else {}
+    if expected_output_tokens is not None:  # live app: book expected output in the throttle
+        extra["expected_output_tokens"] = expected_output_tokens
     _, settings, empty_fails = VERSIONS[version]
     completions: list[Completion] = []
     error = ""
