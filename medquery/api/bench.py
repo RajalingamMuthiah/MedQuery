@@ -3,7 +3,8 @@ uv run python -m medquery.api.bench
 
 Runs 10 fixed DEV questions through the live app on Groq, with the LLM disk cache and the answer
 cache disabled so every call is real, and checks each answered one with /verify. Writes
-medquery/eval/reports/<date>_live_latency_<hash>.md from a clean commit. Uses about 18 of the
+medquery/eval/reports/<date>_live_latency[_paced]_<hash>.md from a clean commit. --paced starts
+one request at most every 30 s (realistic use) instead of back to back. Uses about 18 of the
 daily cap and refuses to start without that much left. The test split is never used."""
 
 import hashlib
@@ -25,6 +26,24 @@ from medquery.eval.report import REPORTS_DIR
 from medquery.fileio import atomic_write
 
 N_QUESTIONS = 10
+PACE_S = 30.0  # --paced: at least this long between request starts (asks and verifies)
+
+
+class Pacer:
+    """Waits so that request starts are at least `interval_s` apart (0 = back to back)."""
+
+    def __init__(self, interval_s: float, clock=time.monotonic, sleep=time.sleep):
+        self.interval_s, self.clock, self.sleep = interval_s, clock, sleep
+        self._last: float | None = None
+
+    def wait(self) -> None:
+        if self.interval_s and self._last is not None:
+            remaining = self.interval_s - (self.clock() - self._last)
+            if remaining > 0:
+                self.sleep(remaining)
+        self._last = self.clock()
+
+
 CAP_NEEDED = 18  # 10 asks + up to 8 verifies
 
 
@@ -72,7 +91,18 @@ def p(values: list[float]) -> str:
     return f"{q['p50']:.2f} | {q['p95']:.2f}"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m medquery.api.bench")
+    parser.add_argument("--paced", action="store_true", help=f"one request every {PACE_S:.0f} s")
+    args = parser.parse_args(argv)
+    pacer = Pacer(PACE_S if args.paced else 0.0)
+    mode = (
+        f"paced (realistic use): one request at most every {PACE_S:.0f} s"
+        if args.paced
+        else "back-to-back (rate-limit bound): each request starts as soon as the last ends"
+    )
     git = git_state()
     if git["dirty"] is not False:
         print("refused: the benchmark report needs a clean, committed git tree")
@@ -96,6 +126,7 @@ def main() -> int:
             print(f"refused: {health['daily_remaining']} of the daily cap left; need {CAP_NEEDED}")
             return 1
         for q in questions:
+            pacer.wait()
             events, first_delta, done = stream_events(client, q["question"])
             name, final = events[-1]
             if name != "final":
@@ -124,6 +155,7 @@ def main() -> int:
                 "answer": final["answer"],
                 "passage_ids": [x["id"] for x in final["passages"]],
             }
+            pacer.wait()
             estimate = client.post("/verify/estimate", json=body).json()["wait_s"]
             started = time.perf_counter()
             v = client.post("/verify", json=body).json()
@@ -143,11 +175,13 @@ def main() -> int:
 
     created = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
     key = hashlib.sha256(f"{created}|{[q['id'] for q in questions]}".encode()).hexdigest()[:10]
-    path = REPORTS_DIR / f"{created[:10]}_live_latency_{key}.md"
+    suffix = "_paced" if args.paced else ""
+    path = REPORTS_DIR / f"{created[:10]}_live_latency{suffix}_{key}.md"
     answered = [r for r in rows if not r["abstained"]]
     lines = [
-        "# MedQuery live latency (Groq, dev questions)",
+        f"# MedQuery live latency (Groq, dev questions): {mode.split(':')[0]}",
         "",
+        f"- Mode: {mode}",
         f"- Created (UTC): {created}",
         f"- Git commit: `{git['commit']}` (clean working tree)",
         f"- Live config: {health['config']['answer_prompt']}, corpus {health['config']['corpus']}, "

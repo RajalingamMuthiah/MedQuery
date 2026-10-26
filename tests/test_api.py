@@ -399,3 +399,25 @@ def test_live_calls_book_expected_output_not_max_tokens(tmp_path):
     c.post("/ask", json={"question": "q?"})
     c.post("/verify", json=verify_body())
     assert [k.get("expected_output_tokens") for k in llm.calls] == [400, 600]
+
+
+def test_bench_pacer_spaces_request_starts():
+    from medquery.api.bench import Pacer
+
+    now, slept = [0.0], []
+
+    def sleep(s):
+        slept.append(s)
+        now[0] += s
+
+    pacer = Pacer(30.0, clock=lambda: now[0], sleep=sleep)
+    pacer.wait()  # first request: no wait
+    now[0] += 4.0  # the request took 4 s
+    pacer.wait()
+    now[0] += 40.0  # a slow request: already past 30 s
+    pacer.wait()
+    assert slept == [26.0]
+    back_to_back = Pacer(0.0, clock=lambda: now[0], sleep=sleep)
+    back_to_back.wait()
+    back_to_back.wait()
+    assert slept == [26.0]
