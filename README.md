@@ -1,8 +1,74 @@
-# MedQuery v2
+# MedQuery
 
-Question answering over public health documents, with cited answers, abstention when evidence is weak, and claim-level hallucination checking.
+**Ask a health question; get a short answer drawn only from public health guidelines, with every sentence linked to the passage it came from, and an honest "the documents don't cover this" when they don't.** MedQuery is a retrieval-augmented question-answering system over 10 public-domain CDC, NIH, VA/DoD and HHS documents on diabetes, hypertension and tuberculosis.
+- **How it answers:** hybrid search (meaning plus keywords), a grounded answer with numbered citations, and an optional claim-by-claim check.
+- **How it was built:** every design choice was measured on a held-out development set with paired statistics. The final system was then scored **once** on a separate test set.
+
+**Live demo:** _link to be added_ · **Deploy your own:** [docs/DEPLOY.md](docs/DEPLOY.md)
+
+_Screenshot or short GIF to be added (`docs/screenshot.png`): an answer with numbered citations and the source panel open._
 
 > **Not medical advice.** MedQuery answers only from its source documents and does not diagnose conditions or give dosing instructions. Always consult a qualified health professional.
+
+### Headline results (test split, run once, no tuning afterwards)
+
+| | Simple baseline | MedQuery | Difference [95% CI] |
+|---|---|---|---|
+| Answer correctness | 0.556 | **0.833** | +0.278 [0.118, 0.469], real |
+| False refusals of answerable questions | 0.389 | **0.111** | −0.278 [−0.479, −0.100], real |
+| Unanswerable questions declined | 1.000 | **1.000** | — |
+| Claim hallucination rate | 0.059 | 0.158 | +0.099 [−0.030, 0.265], not shown to differ |
+
+The numbers come from [2026-10-25_final_test_7e48e89de6.md](medquery/eval/reports/2026-10-25_final_test_7e48e89de6.md) and [2026-10-25_summary_test_dacaeb434340_vs_ff63d760267f.md](medquery/eval/reports/2026-10-25_summary_test_dacaeb434340_vs_ff63d760267f.md). There are 23 test questions, so the intervals are wide. Read the limitations below.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Ingestion
+        PDF[10 public-domain PDFs<br/>sha256-pinned] --> ING[Text, tables, OCR<br/>section-aware chunks]
+        ING --> C2[(Corpus v2<br/>table fix)]
+    end
+    subgraph "Live app (FastAPI + React)"
+        Q[Question] --> HYB[Hybrid retrieval<br/>dense bge-small + BM25<br/>RRF, title/section headers]
+        C2 --> HYB
+        HYB --> GEN[answer_v2 on Groq<br/>gpt-oss-20b, top 5 passages]
+        GEN --> CIT[Answer with numbered citations<br/>or 'not covered']
+        CIT -. optional .-> VER[verify_v2<br/>claim-by-claim check]
+    end
+    subgraph "Evaluation harness"
+        GOLD[Golden set v1<br/>dev 44 / test 23] --> RUN[Resumable runner]
+        RUN --> JUDGE[LLM judge gpt-6.1-sol<br/>validated against hand labels]
+        JUDGE --> REP[Reports: bootstrap CIs<br/>paired differences]
+    end
+    C2 --> RUN
+```
+
+## Quick start (Docker)
+
+```powershell
+Copy-Item .env.example .env      # then set GROQ_API_KEY (free at console.groq.com)
+docker compose up                # first build takes several minutes; then open http://localhost:8000
+```
+
+One image serves the API and the web app on port 8000. It builds corpus v2 from the documents' public URLs (each sha256-checked) and caches the embeddings, so startup takes seconds. See [docs/DEPLOY.md](docs/DEPLOY.md) for configuration, free hosting options and the corpus note.
+
+## Project structure
+
+```
+medquery/
+  ingest/      PDF parsing, tables, OCR, chunking, corpus builds (v1, v2)
+  retrieval/   dense embeddings, BM25, rank fusion, reranker, hybrid pipeline
+  generation/  answer prompts (answer_v1, answer_v2) and grounded answers
+  verify/      sentence splitting and the claim verifier (verify_v1, verify_v2)
+  llm/         provider router (Groq, NVIDIA, OpenAI), throttle, retries, cache, streaming
+  eval/        golden set, runner, judge, metrics, comparisons, reports/
+  api/         FastAPI app, limits, answer cache, smoke and latency scripts
+frontend/      React + Vite + Tailwind web app
+corpus/        manifest.toml: the 10 documents, pinned by sha256
+docs/          SOURCES.md, DEPLOY.md, phase briefs
+tests/         offline tests (fake models; no API keys needed)
+```
 
 ## Final results (test split)
 
@@ -45,7 +111,7 @@ Paired differences (each row against the one above it, on the same questions; 1,
 
 The development history below (Phases 2–5, dev split) records how each choice was made. Dev results are not test results.
 
-## Setup (PowerShell)
+## Local development (PowerShell)
 
 Requires [uv](https://docs.astral.sh/uv/) and [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) with English language data (`tesseract --list-langs` must show `eng`).
 
@@ -314,3 +380,8 @@ Gold evidence is stored as (document, page, quote), never as chunk ids. Each quo
 - **The claim verifier changed little.** On dev it removed one sentence (no over-removal); on test it removed none. It uses the generator model, which may be biased toward its own answers. gpt-oss sometimes returns empty content, so 3 of 32 dev and 1 of 16 test verifications failed and those answers were kept unverified.
 - **Small samples.** 44 dev and 23 test questions give wide confidence intervals. Differences between configurations smaller than the CIs shouldn't be read as real.
 - **Small, US-focused corpus.** It has three topics and ten documents, mostly from US federal agencies.
+
+## Licence and data sources
+
+- **Code:** [MIT](LICENSE) © 2026 Rajalingam Muthiah.
+- **Documents:** the 10 source documents are US government works in the public domain. Each one's source, licence evidence and sha256 are listed in [docs/SOURCES.md](docs/SOURCES.md) and pinned in [corpus/manifest.toml](corpus/manifest.toml). The corpus contains no patient data.
