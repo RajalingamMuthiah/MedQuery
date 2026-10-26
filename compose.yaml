@@ -1,0 +1,17 @@
+# docker compose up  ->  http://localhost:8000  (API and frontend on one origin)
+# Put GROQ_API_KEY in .env (see .env.example); nothing secret is stored in the image.
+services:
+  medquery:
+    build: .
+    image: medquery:latest
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MEDQUERY_DAILY_CAP: ${MEDQUERY_DAILY_CAP:-60}
+      MEDQUERY_RATE_PER_MIN: ${MEDQUERY_RATE_PER_MIN:-6}
+      MEDQUERY_CORS_ORIGIN: ${MEDQUERY_CORS_ORIGIN:-http://localhost:8000}
+      MEDQUERY_TRUSTED_PROXIES: ${MEDQUERY_TRUSTED_PROXIES:-}
+    restart: unless-stopped

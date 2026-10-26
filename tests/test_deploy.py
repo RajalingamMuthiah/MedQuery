@@ -74,3 +74,22 @@ def test_built_frontend_is_served_at_root_after_the_api(tmp_path):
 def test_prepare_reports_whether_the_corpus_is_the_evaluated_one():
     assert "identical" in sha_note(EVALUATED_CORPUS_V2_SHA256)
     assert sha_note("0" * 64).startswith("WARNING")
+
+
+def test_docker_files_pin_their_bases_and_hold_no_secrets():
+    import re
+
+    from medquery import paths
+
+    dockerfile = (paths.ROOT / "Dockerfile").read_text(encoding="utf-8")
+    compose = (paths.ROOT / "compose.yaml").read_text(encoding="utf-8")
+    images = re.findall(r"^FROM\s+(\S+)", dockerfile, re.M) + re.findall(
+        r"--from=(\S+/\S+:\S+)", dockerfile
+    )
+    external = [i for i in images if ":" in i]  # stage names (app, corpus) have no tag
+    assert external and all(re.search(r":\d+\.\d+\.\d+", i) for i in external), external
+    for text in (dockerfile, compose):
+        assert not re.search(r"(gsk_|sk-|nvapi-)[A-Za-z0-9]{8,}", text)
+        assert "GROQ_API_KEY=" not in text
+    ignored = (paths.ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert {"data/", ".env", ".env.*", "**/node_modules"} <= set(ignored)
