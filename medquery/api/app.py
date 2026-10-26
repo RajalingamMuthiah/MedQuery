@@ -14,13 +14,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from medquery import config as settings
 from medquery import paths
 from medquery.api.answer_cache import AnswerCache
 from medquery.api.budget import ANSWER_EXPECTED_TOKENS, VERIFY_EXPECTED_TOKENS
 from medquery.api.highlight import highlights
-from medquery.api.limits import DailyCap, RateLimiter
+from medquery.api.limits import DailyCap, RateLimiter, client_ip, trusted_networks
 from medquery.api.schemas import AskRequest, VerifyRequest
 from medquery.generation.answer import GENERATION, NOT_MEDICAL_ADVICE, answer_from_hits
 from medquery.generation.prompts import answer_messages, extract_citations, is_abstention
@@ -34,6 +35,7 @@ LIVE_PROVIDER = "groq"
 VERIFY_VERSION = "verify_v2"
 USAGE_PATH = paths.ROOT / "data" / "api_usage.json"
 ANSWER_CACHE_PATH = paths.ROOT / "data" / "api_answer_cache.json"
+STATIC_DIR = paths.ROOT / "frontend" / "dist"  # the built frontend, served at / when present
 SAMPLES = {"answerable_per_topic": 2, "unanswerable": 2}
 
 
@@ -142,6 +144,8 @@ def create_app(
     rate_per_min: int | None = None,
     daily_cap: int | None = None,
     cors_origin: str | None = None,
+    trusted_proxies: str | None = None,
+    static_dir: Path | None = None,
 ) -> FastAPI:
     """The app. Tests pass a fake retriever, LLM, chunks and golden items (ready at once) or a
     loader; by default the live config loads in the background at startup."""
@@ -172,6 +176,11 @@ def create_app(
             threading.Thread(target=load, name="medquery-warm-start", daemon=True).start()
         yield
 
+    trusted = trusted_networks(
+        trusted_proxies
+        if trusted_proxies is not None
+        else os.environ.get("MEDQUERY_TRUSTED_PROXIES", "")
+    )
     limiter = RateLimiter(rate_per_min or _env_int("MEDQUERY_RATE_PER_MIN", 6))
     cap = DailyCap(usage_path, daily_cap or _env_int("MEDQUERY_DAILY_CAP", 60))
     app = FastAPI(title="MedQuery", version="0.7.0", lifespan=lifespan)
@@ -206,7 +215,8 @@ def create_app(
             raise HTTPException(503, detail)
 
     def per_ip(request: Request) -> None:
-        client = request.client.host if request.client else "unknown"
+        peer = request.client.host if request.client else "unknown"
+        client = client_ip(peer, request.headers.get("x-forwarded-for"), trusted)
         if not limiter.allow(client):
             raise HTTPException(429, "too many requests: please wait a minute and try again")
 
@@ -427,5 +437,10 @@ def create_app(
             "wait_s": round(sum(c.wait_s for c in v.completions), 3),
             "notice": NOT_MEDICAL_ADVICE,
         }
+
+    # The built frontend, served at / after every API route (Docker: one origin, no CORS).
+    frontend = static_dir or Path(os.environ.get("MEDQUERY_STATIC_DIR", STATIC_DIR))
+    if (frontend / "index.html").exists():
+        app.mount("/", StaticFiles(directory=frontend, html=True), name="frontend")
 
     return app
