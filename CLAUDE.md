@@ -91,6 +91,13 @@ Short chunks (under 30 words) are below the user's 8% threshold. The current rat
   - On r2, gpt-6.1-sol/judge_v2: claims 0.720 (kappa 0.390); wrongly rejected 7 of 21 (v1 labels: 0.680, 8 of 22). judge_v1 stays.
   - The judge is stricter than the labeller, so faithfulness and hallucination rate are pessimistic (README limitations).
 - **Phase 4** followed (see below). **Next:** Phase 5, claim verification (brief to come); the final test-split runs happen once, at the end of Phase 5.
+**Phase 7 (speed and polish): done (2026-10-26), awaiting approval** (brief `docs/brief/phase7-prompt.md`).
+- **Throttle bookings:** live calls book expected output (answer 400, verify 600; from recorded p95 completion tokens 215 and 383, `medquery/api/budget.py`) instead of `max_tokens`; evaluation calls are unchanged (the hint is opt-in). `POST /verify/estimate` returns the throttle wait (no call), and the UI shows it.
+- **Streaming:** `POST /ask/stream` (SSE: retrieval, delta, final = the `/ask` JSON with `ttft_s`, error). `LLMClient.stream` shares the cache key and record with `complete`.
+- **Answer cache:** normalised question + live config identity, LRU of 500, `data/api_answer_cache.json`. Hits skip retrieval, Groq and the daily cap, but count per IP.
+- **Warm start:** a background loader at startup; `/health` reports starting / ok / error; ask and verify return 503 until ready.
+- **Live latency** (`…_live_latency_3bf6964b25.md`, 10 dev questions, caches off): model TTFT p50 0.71 s, full generation p50 0.79 s, retrieval 0.02 s. Whole-request p50 is 30 s and p95 60 s, because back-to-back requests hit Groq's 8K tokens/min with about 3K-token prompts (waits of about 58 s); the wait estimate matched the actual wait to within 0.03 s. The first benchmark run was discarded: the machine slept mid-run (hours-long outliers).
+- **Next lever (not done):** shorter prompts (fewer or shorter passages), a paid Groq tier, or spreading requests. Over-booking is already fixed.
 **Phase 6b (frontend redesign): done and approved (2026-10-25; checked by the user in the browser: light/dark, phone width, keyboard)** (brief `docs/brief/phase6b-ui-prompt.md`). Frontend only; no backend, API or evaluation changes.
 - Calm clinical design (one teal accent, slate neutrals, dark mode by system preference), hash routing (`#/`, `#/sources`, `#/about`), search-style empty state with topic chips and dev sample cards, question / answer card / sources list with the ask box pinned at the bottom, slim session-dismissible banner plus footer notice.
 - Numbered superscript citations ([1] [2], by first appearance) and a numbered Sources list (title, publisher, year, page, Superseded badge); both open the passage panel, and focus returns to the citation on close.
@@ -154,7 +161,7 @@ Next: Part B1 (freeze `golden_v1`, split, runner, judge, dev run, `judge_review_
 - **Judge measurements on frozen labels:** a different judge model splits claims differently. Each labelled claim maps to the re-extracted claims that make it up (`matching_parts`: content-word containment of at least 0.7, otherwise text similarity of at least 0.6). It is unsupported if any part is. Unmatched units are reported, never guessed.
 - **Crash-safe outputs:** use `medquery/fileio.py` for every generated artifact, including eval reports. `atomic_write(path)` writes to a temp file and then calls `os.replace()`, so a crash never leaves a half-written file. `exclusive_lock(path)` refuses to start a second run. The build locks `data/processed/.build.lock`. If a crash leaves the lock behind, delete it once you have checked no run is active. Never run two builds at once: overlapping runs corrupted `chunks.jsonl` once during Phase 1.
 
-### Carry-forward for Phase 7
+### Carry-forward for Phase 7 (done in Phase 7)
 - **Verify wait (~60 s):** the client throttle reserves a request's full `max_tokens` (4000 for `verify_v2`) against Groq's 8K tokens/min, so a check right after a few asks waits for the next minute. Reserve the expected output tokens instead (e.g. the measured p95 completion tokens), and show an estimated wait in the UI.
 
 ### Carry-forward for Phase 8 (deployment)
