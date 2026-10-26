@@ -91,12 +91,13 @@ Short chunks (under 30 words) are below the user's 8% threshold. The current rat
   - On r2, gpt-6.1-sol/judge_v2: claims 0.720 (kappa 0.390); wrongly rejected 7 of 21 (v1 labels: 0.680, 8 of 22). judge_v1 stays.
   - The judge is stricter than the labeller, so faithfulness and hallucination rate are pessimistic (README limitations).
 - **Phase 4** followed (see below). **Next:** Phase 5, claim verification (brief to come); the final test-split runs happen once, at the end of Phase 5.
-**Phase 7 (speed and polish): done (2026-10-26), awaiting approval** (brief `docs/brief/phase7-prompt.md`).
+**Phase 7 (speed and polish): done and approved (2026-10-26)** (brief `docs/brief/phase7-prompt.md`).
 - **Throttle bookings:** live calls book expected output (answer 400, verify 600; from recorded p95 completion tokens 215 and 383, `medquery/api/budget.py`) instead of `max_tokens`; evaluation calls are unchanged (the hint is opt-in). `POST /verify/estimate` returns the throttle wait (no call), and the UI shows it.
 - **Streaming:** `POST /ask/stream` (SSE: retrieval, delta, final = the `/ask` JSON with `ttft_s`, error). `LLMClient.stream` shares the cache key and record with `complete`.
 - **Answer cache:** normalised question + live config identity, LRU of 500, `data/api_answer_cache.json`. Hits skip retrieval, Groq and the daily cap, but count per IP.
 - **Warm start:** a background loader at startup; `/health` reports starting / ok / error; ask and verify return 503 until ready.
 - **Live latency** (`…_live_latency_3bf6964b25.md`, 10 dev questions, caches off): model TTFT p50 0.71 s, full generation p50 0.79 s, retrieval 0.02 s. Whole-request p50 is 30 s and p95 60 s, because back-to-back requests hit Groq's 8K tokens/min with about 3K-token prompts (waits of about 58 s); the wait estimate matched the actual wait to within 0.03 s. The first benchmark run was discarded: the machine slept mid-run (hours-long outliers).
+- **Paced run** (user addition; `--paced`, one request at most every 30 s; `…_live_latency_paced_a0401f7148.md`): whole-request time to first token p50 1.20 s / p95 46.4 s; `/verify` p50 0.88 s / p95 22.1 s. The README shows both runs side by side.
 - **Next lever (not done):** shorter prompts (fewer or shorter passages), a paid Groq tier, or spreading requests. Over-booking is already fixed.
 **Phase 6b (frontend redesign): done and approved (2026-10-25; checked by the user in the browser: light/dark, phone width, keyboard)** (brief `docs/brief/phase6b-ui-prompt.md`). Frontend only; no backend, API or evaluation changes.
 - Calm clinical design (one teal accent, slate neutrals, dark mode by system preference), hash routing (`#/`, `#/sources`, `#/about`), search-style empty state with topic chips and dev sample cards, question / answer card / sources list with the ask box pinned at the bottom, slim session-dismissible banner plus footer notice.

@@ -82,25 +82,27 @@ npm --prefix frontend run dev          # frontend: http://localhost:5173
 
 ## Live performance (Phase 7)
 
-These figures are copied from [2026-10-26_live_latency_3bf6964b25.md](medquery/eval/reports/2026-10-26_live_latency_3bf6964b25.md) (`uv run python -m medquery.api.bench`, run locally from a clean commit).
-- The run covered 10 fixed dev questions through the live app on Groq: 7 answered, 3 abstained, and all 7 answers checked with `/verify`.
-- Both caches were off, so every call was real.
-- It ran in-process, so network time to a browser is not included.
+Two runs of `medquery.api.bench` on the live app, using Groq, the same 10 fixed dev questions (7 answered, 3 abstained) and all 7 answers checked with `/verify`. Both caches were off, so every call was real. The runs were in-process, so network time to a browser is not included.
 
-| Stage | p50 | p95 |
+The two runs differ only in pacing:
+- **Back-to-back (rate-limit bound):** each request starts as soon as the last one ends ([2026-10-26_live_latency_3bf6964b25.md](medquery/eval/reports/2026-10-26_live_latency_3bf6964b25.md)).
+- **Paced (realistic use):** at most one request every 30 s, run with `--paced` ([2026-10-26_live_latency_paced_a0401f7148.md](medquery/eval/reports/2026-10-26_live_latency_paced_a0401f7148.md)).
+
+| p50 / p95 | Back-to-back | Paced (realistic use) |
 |---|---|---|
-| Retrieval | 0.02 s | 0.04 s |
-| Time to first token, model call | 0.71 s | 1.41 s |
-| Full generation, model call | 0.79 s | 1.46 s |
-| Time to first token, whole request | 30.4 s | 59.6 s |
-| `/verify`, whole request | 1.3 s | 59.0 s |
-| `/verify` rate-limit wait (estimated / actual) | 0.61 / 0.59 s | 58.1 / 58.1 s |
+| Retrieval | 0.02 / 0.04 s | 0.02 / 0.03 s |
+| Time to first token, model call | 0.71 / 1.41 s | 0.77 / 1.18 s |
+| Full generation, model call | 0.79 / 1.46 s | 0.83 / 1.22 s |
+| **Time to first token, whole request** | **30.4 / 59.6 s** | **1.20 / 46.4 s** |
+| Whole request to the full answer | 30.4 / 59.6 s | 1.25 / 46.4 s |
+| **`/verify`, whole request** | **1.33 / 59.0 s** | **0.88 / 22.1 s** |
+| `/verify` rate-limit wait, actual | 0.59 / 58.1 s | 0.00 / 21.0 s |
 
-- **The model is fast** (under 1.5 s to the full answer).
-- **The whole-request numbers are rate-limit waits.** Groq's free tier allows 8,000 tokens a minute. Each answer prompt is about 2.4K tokens and each check about 3K, so when requests come back to back, roughly every third one waits for the next minute (about 58 s).
-  - Phase 7 stopped the throttle booking each check's full 4,000-token output limit (it now books 600, from measured output). That removes waits caused by over-booking; it cannot remove waits caused by the prompts themselves.
-  - The app shows the expected wait before a check ("Waiting about N s…"), and the estimate matched the actual wait to within 0.03 s.
-  - A person asking at a normal pace hits these waits far less often than this back-to-back benchmark.
+- **The model is fast in both runs:** under 1.5 s to the full answer.
+- **The difference is Groq's free-tier limit of 8,000 tokens a minute.** Each answer prompt is about 2.4K tokens and each check about 3K.
+  - **Back-to-back,** roughly every third request waits for the next minute (about 58 s).
+  - **Paced,** a typical answer arrives in about 1.2 s and a typical check in under 1 s. An occasional request still waits when the 60-second window fills (the p95 values). With 10 questions, the p95 is close to the single slowest call.
+- **What Phase 7 changed:** the throttle no longer books each check's full 4,000-token output limit, only the measured 600, so waits come only from real token use. The app also shows the expected wait before a check, and in both runs the estimate matched the actual wait to within 0.03 s.
 - **Repeated questions are answered instantly** from the answer cache, without calling Groq or counting toward the daily cap.
 
 ## Corpus and ingestion
